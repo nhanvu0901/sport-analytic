@@ -1,4 +1,7 @@
 import cumulative from './data/cumulative.json';
+import redraft from './data/redraft.json';
+import leaderMatrix from './data/leaderMatrix.json';
+import waffle from './data/waffle.json';
 import type { ScriptLine } from './script';
 
 /**
@@ -138,7 +141,79 @@ const cumScriptVerbatim: ScriptLine[] = [
     ] },
 ];
 
+/**
+ * 09 — slope-pair placeholder script: pick #1 plus the four biggest movers by
+ * |delta|, so the connector direction and colour both get exercised.
+ */
+const rr = (id: string) => (redraft.rows as any[]).find((r) => r.id === id)!;
+const redraftScript: ScriptLine[] = [
+  { entityId: rr('6442').id, text: "Kyrie Irving went first overall in 2011, and fourteen seasons later he's still the best scorer this class produced.",
+    accents: [
+      { t: 0.28, kind: 'zoom',    at: { entityId: rr('6442').id } },
+      { t: 0.74, kind: 'callout', at: { entityId: rr('6442').id }, text: '18,433' },
+    ] },
+  { entityId: rr('6430').id, text: 'Jimmy Butler went thirtieth, the very last pick of the round, and this re-draft has him at fourth.',
+    accents: [
+      { t: 0.30, kind: 'spotlight', at: { entityId: rr('6430').id } },
+      { t: 0.72, kind: 'callout',   at: { entityId: rr('6430').id }, text: '▲26' },
+    ] },
+  { entityId: rr('6480').id, text: 'Derrick Williams went second overall, but a seven-season career only ranks him nineteenth here.',
+    accents: [
+      { t: 0.40, kind: 'arrow', at: { entityId: rr('6480').id }, text: 'The 2nd pick' },
+    ] },
+  { entityId: rr('6443').id, text: 'Reggie Jackson slipped to pick twenty four, then climbed all the way up to ninth in this re-draft.',
+    accents: [
+      { t: 0.40, kind: 'spotlight', at: { entityId: rr('6443').id } },
+    ] },
+  { entityId: rr('6478').id, text: 'Nikola Vucevic went sixteenth, and this re-draft would take him second overall, right behind Kyrie.',
+    accents: [
+      { t: 0.40, kind: 'refline', at: { entityId: rr('6478').id }, text: '2nd here' },
+    ] },
+];
+
+/**
+ * 10 — image-cell-matrix placeholder script: the two players who lead the
+ * most cells, one narrated with a column spotlight (highlightCol), one with
+ * the plain per-entity spotlight.
+ */
+const CURRY_ID = '3975', HARDEN_ID = '3992';
+const leaderMatrixScript: ScriptLine[] = [
+  { entityId: CURRY_ID, text: 'Stephen Curry all but owns the three-point column, leading it five different seasons.',
+    accents: [
+      { t: 0.40, kind: 'spotlight', at: { entityId: CURRY_ID, step: '3PM' } },
+    ] },
+  { entityId: HARDEN_ID, text: 'James Harden shows up four times, across scoring, assists, and threes between 2019 and 2023.',
+    accents: [
+      // Not 'callout' or 'refline': both print `type.marker` text (56px) —
+      // taller than one grid row's own pitch (~100px, most of it already
+      // taken by the headshot) — so ANY row it resolves to bleeds into a
+      // neighbour no matter where the text is nudged; a refline's line also
+      // cuts across the whole row. 'spotlight' draws only a ring, and the
+      // number itself is already spoken in the line, so no text is lost.
+      { t: 0.40, kind: 'spotlight', at: { entityId: HARDEN_ID } },
+    ] },
+];
+
+/** 11 — unit-waffle placeholder script: the three part keys, largest first. */
+const waffleScript: ScriptLine[] = [
+  { entityId: '2PT', text: "Most of LeBron's points, twenty-six thousand six hundred fifty, came from two-point range.",
+    accents: [
+      { t: 0.40, kind: 'spotlight', at: { entityId: '2PT' } },
+    ] },
+  { entityId: 'FT', text: 'Free throws add eight thousand eight hundred eighty-two more, about a fifth of the total.',
+    accents: [
+      { t: 0.40, kind: 'spotlight', at: { entityId: 'FT' } },
+    ] },
+  { entityId: '3PT', text: 'The rest, seven thousand nine hundred eight points, came from three-point range.',
+    accents: [
+      { t: 0.40, kind: 'spotlight', at: { entityId: '3PT' } },
+    ] },
+];
+
 export const SCRIPTS: Record<string, ScriptLine[]> = {
   C01: cumScript,
   C01F: cumScriptVerbatim,   // the source video's own words, for the voice A/B
+  C09: redraftScript,
+  C10: leaderMatrixScript,
+  C11: waffleScript,
 };

@@ -1,9 +1,10 @@
 /** Plain assertions, no framework. `npm test`. */
 import assert from 'node:assert/strict';
 import { seasonRows, cumulate } from '../src/espn';
-import { scaleLinear, niceTicks, fitRows, binGrid, countRadius, ensureContrast, contrastRatio, pathAt, easeOut, type Pt } from '../src/scale';
+import { scaleLinear, niceTicks, fitRows, binGrid, countRadius, ensureContrast, contrastRatio, pathAt, easeOut, rankPair, gridFit, waffleLayout, type Pt } from '../src/scale';
 import teams from '../src/data/teams.json';
 import { eventDensity, DENSITY_FLOOR, accentProgress, ACCENT_KINDS } from '../src/accent';
+import { scrollOffsetAt, type ScrollStop } from '../src/motion';
 import { detectMarkers, allowedNumbers, STYLE_RULES, type BriefEntity, type WriterBrief } from '../src/brief';
 import { verifyDraft } from '../src/verify';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
@@ -124,6 +125,20 @@ t('fitRows switches to scroll past the frame budget', () => {
   assert.ok(f.rowH >= 26, `rowH=${f.rowH}`);
 });
 
+t('fitRows: a shrunk row height that still fits must report static, not scroll', () => {
+  // 30 * 44 = 1320 > 1120 fails the ideal check, but the shrunk rowH (37)
+  // fits 30 * 37 = 1110 <= 1120 — this must not be handed to Scroll.
+  const f = fitRows(30, 1120);
+  assert.equal(f.mode, 'static', `30 rows at rowH ${f.rowH} (${30 * f.rowH} <= 1120) must be static`);
+  assert.equal(f.rowH, 37);
+  assert.equal(f.visible, 30);
+});
+
+t('fitRows: a genuinely long list still scrolls after the re-check', () => {
+  const f = fitRows(450, 1120);
+  assert.equal(f.mode, 'scroll');
+});
+
 /* -------------------------------------------------------------------- binGrid */
 t('binGrid accounts for every point exactly once', () => {
   const pts = Array.from({ length: 550 }, (_, i) => ({ id: i, w: 160 + (i % 90), h: 70 + (i % 21) }));
@@ -219,6 +234,103 @@ t('easeOut is monotonic, bounded, and starts fast', () => {
   assert.ok(easeOut(0.5) > 0.5, 'ease-OUT must be ahead of linear at the midpoint');
   let prev = -1;
   for (let i = 0; i <= 20; i++) { const v = easeOut(i / 20); assert.ok(v >= prev); prev = v; }
+});
+
+/* ------------------------------------------------------------------ rankPair */
+type MoveRow = { id: string; pick: number; value: number | null };
+const moveRows: MoveRow[] = [
+  { id: 'a', pick: 1, value: 100 },   // ties b on value; better (lower) pick wins the tie
+  { id: 'b', pick: 2, value: 100 },
+  { id: 'c', pick: 3, value: 90 },
+  { id: 'd', pick: 4, value: null },  // no NBA scoring data — must not rank
+  { id: 'e', pick: 5, value: 80 },
+];
+const moves = rankPair(moveRows, (r) => r.id, (r) => r.pick, (r) => r.value);
+const moveById = new Map(moves.map((m) => [m.id, m]));
+
+t('rankPair excludes a null value from ranking', () => {
+  const d = moveById.get('d')!;
+  assert.equal(d.to, null);
+  assert.equal(d.delta, null);
+  // ranks stay contiguous 1..4 for the other rows — d does not consume a slot
+  const ranks = moves.filter((m) => m.to !== null).map((m) => m.to).sort((x, y) => x! - y!);
+  assert.deepEqual(ranks, [1, 2, 3, 4]);
+});
+
+t('rankPair breaks a tie toward the better original pick', () => {
+  assert.equal(moveById.get('a')!.to, 1, 'pick 1 beats pick 2 on a value tie');
+  assert.equal(moveById.get('b')!.to, 2);
+});
+
+t('rankPair delta is positive for a move up', () => {
+  const e = moveById.get('e')!;
+  assert.equal(e.from, 5);
+  assert.equal(e.to, 4);
+  assert.equal(e.delta, 1, 'moved from 5th to 4th: delta = from - to = +1');
+});
+
+/* -------------------------------------------------------------------- gridFit */
+t('gridFit gives a square, fully-used cell on a square area', () => {
+  const g = gridFit(6, 6, 606, 606, 6);
+  assert.ok(Math.abs(g.usedW - g.usedH) < 1e-9);
+  assert.equal(g.ox, 0);
+  assert.equal(g.oy, 0);
+  assert.ok(Math.abs(g.usedW - 606) < 1e-9);
+});
+
+t('gridFit fits 7x6 inside 700x1100 with non-negative centring offsets', () => {
+  const g = gridFit(7, 6, 700, 1100, 6);
+  assert.ok(6 * g.cell + 6 * 5 <= 700 + 1e-9, `cols overflow: ${g.usedW}`);
+  assert.ok(7 * g.cell + 6 * 6 <= 1100 + 1e-9, `rows overflow: ${g.usedH}`);
+  assert.ok(g.ox >= 0 && g.oy >= 0);
+});
+
+/* --------------------------------------------------------------- waffleLayout */
+const waffleParts = [
+  { key: 'A', points: 17_343 },
+  { key: 'B', points: 8_921 },
+  { key: 'C', points: 12_565 },
+];
+const units = waffleLayout(waffleParts, 20, 420);
+
+t('waffleLayout sums to exactly unitsTotal on shares that do not divide evenly', () => {
+  assert.equal(units.length, 420);
+});
+
+t('waffleLayout gives every non-zero part at least one unit', () => {
+  for (const p of waffleParts) assert.ok(units.some((u) => u.key === p.key));
+});
+
+t('waffleLayout groups all of one part before the next in reading order', () => {
+  const seenKeys: string[] = [];
+  for (const u of units) if (seenKeys.at(-1) !== u.key) seenKeys.push(u.key);
+  assert.deepEqual(seenKeys, ['A', 'B', 'C'], `parts interleaved: ${seenKeys.join(',')}`);
+});
+
+/* ------------------------------------------------------------- scrollOffsetAt */
+const scrollStops: ScrollStop[] = [
+  { atMs: 1000, offset: 500 },
+  { atMs: 3000, offset: 5000 },   // beyond contentHeight-viewport: must clamp
+];
+const CONTENT_H = 4000, VIEWPORT = 1000, GLIDE = 700;
+
+t('scrollOffsetAt is 0 before the first stop fires', () => {
+  assert.equal(scrollOffsetAt(scrollStops, 0, CONTENT_H, VIEWPORT, GLIDE), 0);
+  assert.equal(scrollOffsetAt(scrollStops, 999, CONTENT_H, VIEWPORT, GLIDE), 0);
+});
+
+t('scrollOffsetAt clamps to contentHeight - viewport', () => {
+  const y = scrollOffsetAt(scrollStops, 3000 + GLIDE, CONTENT_H, VIEWPORT, GLIDE);
+  assert.equal(y, CONTENT_H - VIEWPORT, `expected the clamped max, got ${y}`);
+});
+
+t('scrollOffsetAt is monotonic while gliding between two stops', () => {
+  let prev = -1;
+  for (let ms = 1000; ms <= 1000 + GLIDE; ms += 50) {
+    const y = scrollOffsetAt(scrollStops, ms, CONTENT_H, VIEWPORT, GLIDE);
+    assert.ok(y >= prev - 1e-9, `offset went backwards at ms=${ms}: ${y} < ${prev}`);
+    prev = y;
+  }
 });
 
 /* -------------------------------------------------------------- event density */

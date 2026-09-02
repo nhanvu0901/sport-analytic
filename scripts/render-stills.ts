@@ -17,6 +17,9 @@ const SHOTS: [string, number][] = [
   ['C06-bar-delta', 300],
   ['C07-scatter-image', 260],
   ['C08-dot-strip', 220],
+  ['C09-slope-pair', 600],
+  ['C10-image-cell-matrix', 300],
+  ['C11-unit-waffle', 400],
 ];
 
 console.log('bundling…');

@@ -90,14 +90,21 @@ export const Camera: React.FC<{
    the offset has to be a pure function of time — no component state. */
 export type ScrollStop = { atMs: number; offset: number };
 
-export const Scroll: React.FC<{
-  stops: ScrollStop[];
-  contentHeight: number;
-  viewport: number;
-  glideMs?: number;
-  children: React.ReactNode;
-}> = ({ stops, contentHeight, viewport, glideMs = 700, children }) => {
-  const ms = useMs();
+/**
+ * The scroll offset at a given moment — pure, and the ONLY place this maths
+ * lives. `Scroll` calls it to draw; a chart's `Resolve` calls the exact same
+ * function to know where a scrolled row actually is on screen. Two copies of
+ * this formula (one in `Scroll`, one hand-mirrored in a chart) drift the
+ * moment either one changes, which defeats the entire point of pulling time
+ * out of the charts and into this module.
+ */
+export function scrollOffsetAt(
+  stops: ScrollStop[],
+  ms: number,
+  contentHeight: number,
+  viewport: number,
+  glideMs = 700
+): number {
   const max = Math.max(0, contentHeight - viewport);
   const clamp = (o: number) => Math.max(0, Math.min(max, o - viewport * 0.42));
 
@@ -114,6 +121,18 @@ export const Scroll: React.FC<{
       easing: Easing.inOut(Easing.cubic),
     });
   }
+  return y;
+}
+
+export const Scroll: React.FC<{
+  stops: ScrollStop[];
+  contentHeight: number;
+  viewport: number;
+  glideMs?: number;
+  children: React.ReactNode;
+}> = ({ stops, contentHeight, viewport, glideMs = 700, children }) => {
+  const ms = useMs();
+  const y = scrollOffsetAt(stops, ms, contentHeight, viewport, glideMs);
 
   return (
     <div style={{ position: 'absolute', left: 0, top: 0, width: V.W, height: viewport, overflow: 'hidden' }}>

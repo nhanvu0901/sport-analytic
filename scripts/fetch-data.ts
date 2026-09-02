@@ -4,7 +4,7 @@
  */
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { api, pool, seasonRows, cumulate, findAthleteId, headshot, teamLogo } from '../src/espn';
+import { api, get, pool, seasonRows, cumulate, findAthleteId, headshot, teamLogo } from '../src/espn';
 
 const SEASON = 2026;                 // ESPN year 2026 == the 2025-26 season
 const OUT = join(process.cwd(), 'src/data');
@@ -179,6 +179,158 @@ save('cumulative.json', {
   series: ordered,
 });
 for (const s of ordered) console.log(`  ${s.name.padEnd(26)} pick ${String(s.pick ?? '–').padStart(2)}  ${s.total.toLocaleString()}`);
+
+/* ------------------------------------------------- 09 slope-pair: re-draft */
+console.log('2011 NBA re-draft (round 1, ranked by career points)…');
+const REDRAFT_YEAR = 2011;
+const draftData = await api.draftRounds(REDRAFT_YEAR);
+const round1 = (draftData.items[0].picks ?? []) as any[];
+const redraftRows = await pool(round1, 6, async (pick) => {
+  const draftAthlete = await get(pick.athlete.$ref);
+  const name: string = draftAthlete.displayName;
+  const last = name.split(' ').slice(1).join(' ') || name;
+  // draftAthlete.id is a COLLEGE id, a different space from the NBA id — see
+  // the pitfall note in the plan. findAthleteId() re-resolves through ESPN's
+  // search index, which is exactly where the resolution rate stops being
+  // 100%: it drops players who left the league even though their own
+  // /stats endpoint still has them.
+  const searchId = await findAthleteId(name);
+  let value: number | null = null;
+  let seasons = 0;
+  let resolvedId: string | null = null;
+  // A pick is a miss as soon as EITHER step fails to produce usable points —
+  // search returning nothing, or (measured live: pick 28, Norris Cole) search
+  // returning an id whose /stats endpoint itself 404s. Either way this must
+  // degrade to "no NBA data", not throw: pool() swallows a thrown error into
+  // a silently missing row, which would drop an actual draft pick from the
+  // chart rather than showing it as a legitimate zero-data outcome. The plan's
+  // contract is resolvedId/value null together for a miss, so a 404 here
+  // resets resolvedId too rather than reporting a bridge that didn't pay off.
+  if (searchId) {
+    try {
+      const stats = await api.athleteStats(searchId);
+      const pts = seasonRows(stats, 'totals', 'PTS');
+      if (pts.length) { value = pts.reduce((s, r) => s + r.value, 0); seasons = pts.length; resolvedId = searchId; }
+    } catch { /* leave resolvedId null: the id bridge did not pay off */ }
+  }
+  return {
+    id: resolvedId ?? `draft-${pick.overall}`,
+    name, last,
+    actualPick: pick.overall as number,
+    // Best-effort image for an unresolved pick: the college id is a different
+    // namespace so this can 404, but there is no other picture to show for a
+    // player ESPN's search index dropped.
+    headshot: headshot(resolvedId ?? draftAthlete.id),
+    value, resolvedId, seasons,
+  };
+});
+redraftRows.sort((a, b) => a.actualPick - b.actualPick);
+const unresolved = redraftRows.filter((r) => r.resolvedId === null).length;
+save('redraft.json', {
+  title: '2011 NBA Re-Draft', sub: 'Ranked by career points',
+  year: REDRAFT_YEAR, unit: 'points',
+  rows: redraftRows, unresolved,
+});
+console.log(`  ${redraftRows.length - unresolved}/${redraftRows.length} resolved to an NBA id ` +
+  `(${Math.round((100 * (redraftRows.length - unresolved)) / redraftRows.length)}%)`);
+console.log(`  unresolved: ${redraftRows.filter((r) => r.resolvedId === null).map((r) => r.name).join(', ') || 'none'}`);
+
+/* -------------------------------------------------- 10 image-cell-matrix: leaders */
+console.log('league leaders by season and category…');
+// 7 most recently COMPLETE seasons. 2026 (2025-26) has not tipped off yet —
+// the endpoint answers for it anyway, but on stale/partial data — so the
+// window ends at 2025 rather than the "current" season year fetch-data.ts
+// otherwise uses.
+const MATRIX_SEASONS = [2025, 2024, 2023, 2022, 2021, 2020, 2019];
+const MATRIX_CATS: [string, string][] = [
+  ['pointsPerGame', 'PTS'], ['reboundsPerGame', 'REB'], ['assistsPerGame', 'AST'],
+  ['stealsPerGame', 'STL'], ['blocksPerGame', 'BLK'], ['3PointsMadePerGame', '3PM'],
+];
+const seasonLeaders = await pool(MATRIX_SEASONS, 4, async (y) => ({
+  y, data: await get<any>(`https://sports.core.api.espn.com/v2/sports/basketball/leagues/nba/seasons/${y}/types/2/leaders?limit=3`),
+}));
+const leadersByYear = new Map(seasonLeaders.map((s) => [s.y, s.data]));
+
+type CellSlot = { row: number; col: number; espnCat: string; year: number };
+const slots: CellSlot[] = [];
+MATRIX_SEASONS.forEach((y, row) => MATRIX_CATS.forEach(([espnCat], col) => slots.push({ row, col, espnCat, year: y })));
+
+const cells = (
+  await pool(slots, 6, async (slot) => {
+    const data = leadersByYear.get(slot.year);
+    const cat = data?.categories?.find((c: any) => c.name === slot.espnCat);
+    const leader = cat?.leaders?.[0];
+    if (!leader) return undefined as any;
+    const id = leader.athlete.$ref.split('/athletes/')[1].split('?')[0];
+    const a = await get(leader.athlete.$ref);
+    return {
+      row: slot.row, col: slot.col, entityId: id,
+      name: a.displayName, last: a.lastName,
+      headshot: headshot(id), value: Number(leader.value.toFixed(1)),
+    };
+  })
+).filter(Boolean);
+
+save('leaderMatrix.json', {
+  title: 'League Leaders', sub: 'Every season, every category',
+  rowDim: { name: 'season', steps: MATRIX_SEASONS.map(String) },
+  colDim: { name: 'category', steps: MATRIX_CATS.map(([, short]) => short) },
+  cells,
+});
+console.log(`  ${cells.length}/${slots.length} cells resolved`);
+
+/* ------------------------------------------------------- 11 unit-waffle: LeBron */
+console.log("LeBron James career point decomposition (2PT / 3PT / FT)…");
+const LEBRON_ID = '1966';
+const lebronStats = await api.athleteStats(LEBRON_ID);
+const totalsCat = lebronStats.categories.find((c: any) => c.name === 'totals');
+const labelIndex = (label: string) => totalsCat.labels.indexOf(label);
+const [iFG, i3PT, iFT, iPTS] = [labelIndex('FG'), labelIndex('3PT'), labelIndex('FT'), labelIndex('PTS')];
+const madeOf = (row: any, i: number) => Number(String(row.stats[i]).split('-')[0].replace(/,/g, ''));
+const plainOf = (row: any, i: number) => Number(String(row.stats[i]).replace(/,/g, ''));
+
+const seasonGroups = new Map<string, any[]>();
+for (const row of totalsCat.statistics) {
+  const season = row.season?.displayName;
+  if (!season) continue;
+  const list = seasonGroups.get(season);
+  if (list) list.push(row); else seasonGroups.set(season, [row]);
+}
+
+let totalTwos = 0, totalThrees = 0, totalFrees = 0, totalPts = 0;
+const bySeason: { season: string; points: number }[] = [];
+for (const [season, rows] of seasonGroups) {
+  // Same mid-season-trade convention as seasonRows(): prefer ESPN's own
+  // roll-up row over summing the per-team splits ourselves.
+  const rollup = rows.find((r) => String(r.teamSlug ?? '').includes('Totals'));
+  const use = rollup ? [rollup] : rows;
+  const fgMade = use.reduce((s, r) => s + madeOf(r, iFG), 0);
+  const tpMade = use.reduce((s, r) => s + madeOf(r, i3PT), 0);
+  const ftMade = use.reduce((s, r) => s + madeOf(r, iFT), 0);
+  const pts = use.reduce((s, r) => s + plainOf(r, iPTS), 0);
+  const threes = tpMade, twos = fgMade - threes, frees = ftMade;
+  const computed = 2 * twos + 3 * threes + frees;
+  if (computed !== pts) {
+    console.log(`  ! ${season}: 2*${twos}+3*${threes}+${frees}=${computed} but ESPN PTS=${pts} (diff ${computed - pts}) — reporting, not fixing`);
+  }
+  totalTwos += twos; totalThrees += threes; totalFrees += frees; totalPts += pts;
+  bySeason.push({ season, points: pts });
+}
+bySeason.sort((a, b) => a.season.localeCompare(b.season));
+
+const waffleParts = [
+  { key: '2PT', label: 'Two-Point Field Goals', points: totalTwos * 2 },
+  { key: '3PT', label: 'Three-Pointers', points: totalThrees * 3 },
+  { key: 'FT', label: 'Free Throws', points: totalFrees },
+].map((p) => ({ ...p, share: Number((p.points / totalPts).toFixed(4)) }));
+
+save('waffle.json', {
+  title: `${totalPts.toLocaleString()} Points`, sub: 'Every point LeBron James has scored',
+  entityId: LEBRON_ID, name: 'LeBron James', headshot: headshot(LEBRON_ID), total: totalPts,
+  parts: waffleParts, bySeason,
+});
+console.log(`  ${totalPts.toLocaleString()} total across ${bySeason.length} seasons: ` +
+  waffleParts.map((p) => `${p.key} ${p.points.toLocaleString()} (${Math.round(p.share * 100)}%)`).join(', '));
 
 save('teams.json', teams);
 console.log('\ndone.');

@@ -13,6 +13,9 @@ import { StackedColumn } from './charts/StackedColumn';
 import { BarDelta } from './charts/BarDelta';
 import { Scatter } from './charts/Scatter';
 import { DotStrip } from './charts/DotStrip';
+import { SlopePair } from './charts/SlopePair';
+import { ImageCellMatrix } from './charts/ImageCellMatrix';
+import { UnitWaffle } from './charts/UnitWaffle';
 import { T, series as PALETTE, PLOT } from './theme';
 
 import cumulative from './data/cumulative.json';
@@ -24,6 +27,9 @@ import scatter from './data/scatter.json';
 import dotStrip from './data/dotStrip.json';
 import salaryCap from './data/salaryCap.json';
 import teams from './data/teams.json';
+import redraft from './data/redraft.json';
+import leaderMatrix from './data/leaderMatrix.json';
+import waffle from './data/waffle.json';
 
 const byAbbr = new Map((teams as any[]).map((t) => [t.abbr, t]));
 const NBA_LOGO = 'https://a.espncdn.com/i/teamlogos/leagues/500/nba.png';
@@ -66,6 +72,11 @@ const cap = buildTimeline((salaryCap.rows as any[]).slice(0, 6).map((r) => ({
 
 const tallest = [...dotStrip.rows].sort((a, b) => b.y - a.y).slice(0, 4).map((r) => r.id);
 const heaviest = [...dotStrip.rows].sort((a, b) => b.x - a.x).slice(0, 3).map((r) => r.id);
+
+/* ---------------------------------------------------------------- 09-11 */
+const redraftTl = buildTimeline(SCRIPTS.C09);
+const leaderMatrixTl = buildTimeline(SCRIPTS.C10);
+const waffleTl = buildTimeline(SCRIPTS.C11);
 
 export const RemotionRoot: React.FC = () => (
   <>
@@ -155,6 +166,33 @@ export const RemotionRoot: React.FC = () => (
       component={() => (
         <Frame title={dotStrip.title} sub={dotStrip.sub} logo={NBA_LOGO}>
           <DotStrip data={dotStrip as any} beats={strip.beats} labelIds={[...tallest, ...heaviest]} />
+        </Frame>
+      )}
+    />
+    <Composition
+      id="C09-slope-pair" width={V.W} height={V.H} fps={V.FPS}
+      durationInFrames={framesFor(redraftTl.durationMs, V.FPS)}
+      component={() => (
+        <Frame title={redraft.title} sub={redraft.sub} logo={NBA_LOGO}>
+          <SlopePair data={redraft as any} beats={redraftTl.beats} />
+        </Frame>
+      )}
+    />
+    <Composition
+      id="C10-image-cell-matrix" width={V.W} height={V.H} fps={V.FPS}
+      durationInFrames={framesFor(leaderMatrixTl.durationMs, V.FPS)}
+      component={() => (
+        <Frame title={leaderMatrix.title} sub={leaderMatrix.sub} logo={NBA_LOGO}>
+          <ImageCellMatrix data={leaderMatrix as any} beats={leaderMatrixTl.beats} />
+        </Frame>
+      )}
+    />
+    <Composition
+      id="C11-unit-waffle" width={V.W} height={V.H} fps={V.FPS}
+      durationInFrames={framesFor(waffleTl.durationMs, V.FPS)}
+      component={() => (
+        <Frame title={waffle.title} sub={waffle.sub} logo={NBA_LOGO}>
+          <UnitWaffle data={waffle as any} beats={waffleTl.beats} />
         </Frame>
       )}
     />

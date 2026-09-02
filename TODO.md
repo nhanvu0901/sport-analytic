@@ -49,8 +49,10 @@ Ordered. Items 1 and 2 are done; **Now** is what comes next.
       (currently lands at −15.0 LUFS against a −14 target).
 - [ ] **10. Cap thresholds** are hardcoded from the 2025-26 CBA. Verify per season
       or derive them.
-- [ ] **11. The other ten chart types** from the taxonomy — ridgeline, map,
-      matrix, slope, waffle, venn, timeline, token rows. Only after 1–7 ship.
+- [x] **Three more chart types: 11 of 18.** slope-pair (re-draft, 10 source videos), image-cell-matrix (4 videos), unit-waffle. All three reuse the shared motion layer unchanged, which was the architecture test.
+- [ ] **Reveal vs. draw-whole is a per-chart decision.** Reveal entities one at a time only when each new one ADDS information (cumulative lines, a race). Draw the whole thing and let the beat drive emphasis only when the information lives in the RELATIONS between entities — a ranked list, a budget column, a re-draft board. Got this wrong twice now (StackedColumn, then SlopePair) by copying the CumulativeLines pattern; write the rule into any new chart's spec.
+- [ ] **Re-draft id bridge for older classes.** ESPN's search index drops players who left the NBA, so 2011 resolves 26/30 and 2005-2008 will be worse. `seasons/{y}/athletes` returns 626 refs for a season with no names — resolving them once into a name→id map (~25 s, cached) would fix every older class.
+- [ ] **Remaining 7 chart types.** ridgeline, heatmap-matrix, stacked-column-groups, geo-pins, quadrant, timeline-rows, token-rows. timeline-rows is blocked: champions per season are not in any source we have — `seasons/{y}` has no champion field, postseason standings come back empty, and player bios list "Finals MVP" but never "NBA Champion".
 
 ## Known gaps
 

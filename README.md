@@ -1,7 +1,7 @@
 # sport-analytic
 
 Automated NBA data-viz Shorts, reverse-engineered from
-[NBA Recap Pod](https://youtube.com/@NBArecap). Eight chart types render at
+[NBA Recap Pod](https://youtube.com/@NBArecap). Eleven chart types render at
 1080×1920 from live ESPN data.
 
 ## Run it
@@ -71,7 +71,7 @@ model or venv changes underneath it.
 | `src/theme.ts` | Resolves the active theme into the tokens the charts read. Charts never see a theme name. |
 | `src/chrome/` | Ground, title, logo, watermark, karaoke caption. Identical for every chart. |
 | `src/motion/` | The six shared techniques: camera, scroll, reveal, annotation, spotlight, inset panel. They know about time; they know nothing about charts. |
-| `src/charts/` | Six components covering eight chart types. They know how to draw; they know nothing about time. |
+| `src/charts/` | Nine components covering eleven chart types. They know how to draw; they know nothing about time. |
 | `router/` | Picks the chart type from the *shape* of the data, not the topic. |
 
 That split is the point. A ninth chart type is one file in `src/charts/`, and
@@ -89,6 +89,9 @@ changing how the camera eases is one edit for all of them.
 | `C06-bar-delta` | baseline + change | points per game, last season → this |
 | `C07-scatter-image` | scatter, logo markers | salary vs points per game |
 | `C08-dot-strip` | dot density | 550 players by height and weight |
+| `C09-slope-pair` | slope pair (re-draft) | 2011 NBA re-draft, round 1: actual pick vs. ranked by career points |
+| `C10-image-cell-matrix` | image cell matrix | league leaders, 7 seasons x 6 categories, headshot per cell |
+| `C11-unit-waffle` | unit waffle | LeBron James career points decomposed into 2PT / 3PT / FT |
 
 ## Identity
 
