@@ -1,0 +1,26 @@
+{
+  "name": "sport-analytic",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "fetch": "tsx scripts/fetch-data.ts",
+    "studio": "remotion studio src/index.ts",
+    "still": "tsx scripts/render-stills.ts",
+    "video": "remotion render src/index.ts",
+    "test": "tsx scripts/test-scales.ts"
+  },
+  "dependencies": {
+    "@remotion/cli": "4.0.520",
+    "@remotion/google-fonts": "4.0.520",
+    "@remotion/media-utils": "4.0.520",
+    "react": "19.0.0",
+    "react-dom": "19.0.0",
+    "remotion": "4.0.520"
+  },
+  "devDependencies": {
+    "@types/react": "19.0.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}
