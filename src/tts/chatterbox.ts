@@ -9,18 +9,40 @@
  *
  * (ElevenLabs' `with-timestamps` gives per-character alignment and would beat
  * this on caption precision. This costs nothing and runs offline.)
+ *
+ * Seeding + cache: without a seed, regenerating after editing ONE sentence
+ * reshuffles the delivery of every sentence, and the approved take is lost.
+ * Each chunk gets a deterministic per-sentence seed (positional: 1000+i) and
+ * its WAV is cached under a hash of everything that affects the audio (text,
+ * seed, voice file CONTENTS, exaggeration, cfg, temperature, CACHE_VERSION).
+ * Editing one sentence then costs one sentence; an unchanged script costs 0s
+ * and reproduces the exact bytes already approved.
  */
 import { spawn } from 'node:child_process';
-import { mkdtempSync, readFileSync, existsSync, writeFileSync, readdirSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import {
+  mkdtempSync, mkdirSync, readFileSync, existsSync, writeFileSync, copyFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-export type Chunk = { text: string; beatIndex: number };
+export type Chunk = { text: string; beatIndex: number; seed?: number };
 export type WordTime = { word: string; startMs: number; endMs: number };
 
 const WORKER = join(process.cwd(), 'src/tts/chatterbox_worker.py');
 const VENV = process.env.CHATTERBOX_VENV
   ?? '/Users/nhanvu/Documents/code/comic-book-pipeline/.venv-chatterbox';
+
+// Bump by hand when the model/venv changes (e.g. a chatterbox-tts upgrade
+// changes what the same text+seed produces). Automating that detection is
+// complexity not worth it — the venv is pinned by a human anyway.
+export const CACHE_VERSION = 'chatterbox-0.1.7-v1';
+
+// TTS_CACHE_DIR lets tests (and any future tool) point the cache at a tmp
+// dir without touching the real .cache/tts. Read lazily, not at import time,
+// so a test can set the env var after this module is already loaded.
+const cacheDir = () => process.env.TTS_CACHE_DIR || join(process.cwd(), '.cache/tts');
+const cachePath = (key: string) => join(cacheDir(), `${key}.wav`);
 
 export const venvPython = () => {
   for (const rel of [['bin', 'python'], ['Scripts', 'python.exe']]) {
@@ -29,6 +51,29 @@ export const venvPython = () => {
   }
   return join(VENV, 'bin', 'python');
 };
+
+const sha1 = (data: string | Buffer) => createHash('sha1').update(data).digest('hex');
+
+/**
+ * Content-addressed key for one chunk's audio. The voice is hashed by file
+ * CONTENTS, not path, so swapping the reference wav under the same filename
+ * invalidates the cache correctly instead of silently reusing a stale take.
+ */
+export function cacheKey(
+  c: { text: string; seed: number },
+  opts: { voiceWav?: string; exaggeration?: number; cfgWeight?: number; temperature?: number }
+): string {
+  const voice = opts.voiceWav ? sha1(readFileSync(opts.voiceWav)) : 'default';
+  return sha1(JSON.stringify({
+    v: CACHE_VERSION,
+    text: c.text,
+    seed: c.seed,
+    voice,
+    exaggeration: opts.exaggeration ?? 0.5,
+    cfg: opts.cfgWeight ?? 0.5,
+    temperature: opts.temperature ?? 0.8,
+  }));
+}
 
 /** Split into sentences, then split any sentence over the cap at a comma. */
 export function toSentences(text: string, maxChars = 320): string[] {
@@ -78,40 +123,25 @@ export function spreadWords(text: string, startMs: number, durMs: number): WordT
   });
 }
 
-export type SynthResult = {
-  chunkWavs: string[];
-  perChunk: { text: string; beatIndex: number; startMs: number; endMs: number }[];
-  words: WordTime[];
-  durationMs: number;
-  sampleRate: number;
+export type WorkerJob = {
+  chunks: { text: string; key: string; seed: number; exaggeration: number; cfg_weight: number }[];
+  out_dir: string;
+  audio_prompt: string | null;
+  temperature: number;
+  device: string | null;
 };
 
-export async function synthesize(
-  chunks: Chunk[],
-  opts: { voiceWav?: string; exaggeration?: number; cfgWeight?: number; temperature?: number; log?: (s: string) => void } = {}
-): Promise<SynthResult> {
-  const log = opts.log ?? (() => {});
+/** The real worker launch, extracted so tests can inject a stub instead. */
+async function runWorkerReal(job: WorkerJob, log: (s: string) => void): Promise<void> {
   const py = venvPython();
   if (!existsSync(py)) {
     throw new Error(
       `Chatterbox venv missing at ${VENV}.\n  python3 -m venv ${VENV} && ${py} -m pip install chatterbox-tts "setuptools<81"`
     );
   }
-
   const dir = mkdtempSync(join(tmpdir(), 'chatterbox-'));
-  const outDir = join(dir, 'wav');
   const jobPath = join(dir, 'job.json');
-  writeFileSync(jobPath, JSON.stringify({
-    chunks: chunks.map((c) => ({
-      text: c.text,
-      exaggeration: opts.exaggeration ?? 0.5,
-      cfg_weight: opts.cfgWeight ?? 0.5,
-    })),
-    out_dir: outDir,
-    audio_prompt: opts.voiceWav ?? null,
-    temperature: opts.temperature ?? 0.8,
-    device: null,
-  }));
+  writeFileSync(jobPath, JSON.stringify(job));
 
   await new Promise<void>((resolve, reject) => {
     const proc = spawn(py, [WORKER, jobPath], { stdio: ['ignore', 'pipe', 'pipe'] });
@@ -124,7 +154,7 @@ export async function synthesize(
         const m = JSON.parse(line);
         if (m.ready) log(`  model on ${m.device} @ ${m.sr}Hz (loaded in ${m.load_sec}s)`);
         else if (m.error) log(`  ⚠ chunk ${m.i} failed: ${String(m.error).slice(0, 120)}`);
-        else log(`  chunk ${m.i + 1}/${chunks.length}: ${m.sec}s audio in ${m.gen_sec}s`);
+        else log(`  chunk ${m.i + 1}/${job.chunks.length}: ${m.sec}s audio in ${m.gen_sec}s`);
       } catch { /* not our JSON */ }
     };
     proc.stdout.on('data', (d) => {
@@ -138,28 +168,87 @@ export async function synthesize(
     proc.on('close', (code) =>
       code === 0 ? resolve() : reject(new Error(`worker exit ${code}\n  ${tail.slice(-14).join('\n  ')}`)));
   });
+}
 
+export type SynthResult = {
+  chunkWavs: string[];
+  perChunk: { text: string; beatIndex: number; seed: number; key: string; cached: boolean; startMs: number; endMs: number }[];
+  words: WordTime[];
+  durationMs: number;
+  sampleRate: number;
+};
+
+export async function synthesize(
+  chunks: Chunk[],
+  opts: {
+    voiceWav?: string; exaggeration?: number; cfgWeight?: number; temperature?: number;
+    log?: (s: string) => void; runWorker?: (job: WorkerJob) => Promise<void>;
+  } = {}
+): Promise<SynthResult> {
+  const log = opts.log ?? (() => {});
+
+  // Seed is positional by default (1000+i): stable across runs as long as the
+  // sentence count and order don't change, which is what makes an untouched
+  // script reproduce byte-identical audio. A caller-supplied seed overrides it.
+  const keyed = chunks.map((c, i) => {
+    const seed = c.seed ?? 1000 + i;
+    return { ...c, seed, key: cacheKey({ text: c.text, seed }, opts) };
+  });
+
+  mkdirSync(cacheDir(), { recursive: true });
+  const misses = keyed.filter((c) => !existsSync(cachePath(c.key)));
+  log(`  ${keyed.length - misses.length} cached, ${misses.length} to synthesize`);
+
+  if (misses.length > 0) {
+    // Only spawn the worker (and pay the ~11s model load) when something is
+    // actually missing from the cache.
+    const runWorker = opts.runWorker ?? ((job: WorkerJob) => runWorkerReal(job, log));
+    const work = mkdtempSync(join(tmpdir(), 'chatterbox-'));
+    const outDir = join(work, 'wav');
+    const job: WorkerJob = {
+      chunks: misses.map((c) => ({
+        text: c.text, key: c.key, seed: c.seed,
+        exaggeration: opts.exaggeration ?? 0.5, cfg_weight: opts.cfgWeight ?? 0.5,
+      })),
+      out_dir: outDir,
+      audio_prompt: opts.voiceWav ?? null,
+      temperature: opts.temperature ?? 0.8,
+      device: null,
+    };
+    await runWorker(job);
+    // Copy only what the worker actually produced into the cache — one bad
+    // chunk must not lose the run, same policy as before.
+    for (const c of misses) {
+      const src = join(outDir, `${c.key}.wav`);
+      if (existsSync(src)) copyFileSync(src, cachePath(c.key));
+    }
+  }
+
+  const missKeys = new Set(misses.map((c) => c.key));
   const chunkWavs: string[] = [];
   const perChunk: SynthResult['perChunk'] = [];
   const words: WordTime[] = [];
   let t = 0;
   let sampleRate = 24000;
-  for (let i = 0; i < chunks.length; i++) {
-    const p = join(outDir, `chunk_${String(i).padStart(5, '0')}.wav`);
+  for (const c of keyed) {
+    const p = cachePath(c.key);
     if (!existsSync(p)) continue;                 // failed chunk: no audio, no words
     const durMs = wavDurationSec(p) * 1000;
     const b = readFileSync(p);
     sampleRate = b.readUInt32LE(24);
     chunkWavs.push(p);
-    perChunk.push({ text: chunks[i].text, beatIndex: chunks[i].beatIndex, startMs: Math.round(t), endMs: Math.round(t + durMs) });
-    words.push(...spreadWords(chunks[i].text, t, durMs));
+    perChunk.push({
+      text: c.text, beatIndex: c.beatIndex, seed: c.seed, key: c.key, cached: !missKeys.has(c.key),
+      startMs: Math.round(t), endMs: Math.round(t + durMs),
+    });
+    words.push(...spreadWords(c.text, t, durMs));
     t += durMs;
   }
-  if (!chunkWavs.length) throw new Error(`Chatterbox produced no audio in ${outDir} (${readdirSync(outDir).length} files)`);
-  if (chunkWavs.length < chunks.length) {
+  if (!chunkWavs.length) throw new Error(`Chatterbox produced no audio in ${cacheDir()}`);
+  if (chunkWavs.length < keyed.length) {
     // Loud, not silent: a missing chunk means missing WORDS, and the chart
     // animation is cut off word positions.
-    log(`  ⚠ ${chunks.length - chunkWavs.length} chunk(s) produced no audio and were DROPPED`);
+    log(`  ⚠ ${keyed.length - chunkWavs.length} chunk(s) produced no audio and were DROPPED`);
   }
   return { chunkWavs, perChunk, words, durationMs: Math.round(t), sampleRate };
 }

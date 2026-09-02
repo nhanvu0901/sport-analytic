@@ -124,3 +124,54 @@ export function ensureContrast(color: string, ground: string, minRatio = 2.6): s
   }
   return toHex(r, g, b);
 }
+
+
+/* ────────────────────────────────────── continuous travel along a polyline */
+
+export type Pt = readonly [number, number];
+
+/**
+ * The polyline drawn up to fraction `t`, plus the exact point at `t`.
+ *
+ * The old code sliced the point array — `pts.slice(0, ceil(n * t))` — which
+ * grows the line one whole DATA POINT at a time. Over eight seasons that is
+ * eight visible jumps, and the portrait riding the end teleported between
+ * vertices. Interpolating by arc length makes both continuous.
+ */
+export function pathAt(points: readonly Pt[], t: number): { path: Pt[]; head: Pt } {
+  if (points.length === 0) return { path: [], head: [0, 0] };
+  if (points.length === 1) return { path: [points[0]], head: points[0] };
+
+  const seg: number[] = [];
+  let total = 0;
+  for (let i = 1; i < points.length; i++) {
+    const d = Math.hypot(points[i][0] - points[i - 1][0], points[i][1] - points[i - 1][1]);
+    seg.push(d);
+    total += d;
+  }
+  const clamped = Math.max(0, Math.min(1, t));
+  if (total === 0) return { path: [points[0]], head: points[0] };
+  if (clamped >= 1) return { path: [...points], head: points[points.length - 1] };
+
+  let want = total * clamped;
+  const path: Pt[] = [points[0]];
+  for (let i = 0; i < seg.length; i++) {
+    if (want > seg[i]) {
+      want -= seg[i];
+      path.push(points[i + 1]);
+      continue;
+    }
+    const f = seg[i] === 0 ? 0 : want / seg[i];
+    const head: Pt = [
+      points[i][0] + (points[i + 1][0] - points[i][0]) * f,
+      points[i][1] + (points[i + 1][1] - points[i][1]) * f,
+    ];
+    path.push(head);
+    return { path, head };
+  }
+  const last = points[points.length - 1];
+  return { path, head: last };
+}
+
+/** Cubic ease-out, for anything that grows. Linear growth reads as mechanical. */
+export const easeOut = (t: number) => 1 - Math.pow(1 - Math.max(0, Math.min(1, t)), 3);

@@ -3,7 +3,8 @@ import { Img } from 'remotion';
 import { PLOT, T, TH, V, type } from '../theme';
 import { scaleLinear, niceTicks } from '../scale';
 import { PlotFrame } from '../chrome/PlotFrame';
-import { AnnotationLayer, Headshot, useBeat, type Beat, type CameraStop, Camera } from '../motion';
+import { AccentLayer, Headshot, useBeat, type Beat, type CameraStop, Camera } from '../motion';
+import type { Anchor, Resolve } from '../accent';
 
 export type Pt = { id: string; name: string; last: string; x: number; y: number; abbr?: string; logo?: string; headshot: string };
 
@@ -26,6 +27,11 @@ export const Scatter: React.FC<{
   const yt = niceTicks(Math.min(0, ...ys), Math.max(...ys), 7);
   const x = scaleLinear([xt[0], xt.at(-1)!], [0, PLOT.w]);
   const y = scaleLinear([yt[0], yt.at(-1)!], [PLOT.h, 0]);
+
+  const resolve: Resolve = (a: Anchor) => {
+    const r = data.rows.find((v) => v.id === a.entityId);
+    return r ? { x: PLOT.x + x(r.x), y: PLOT.y + y(r.y) } : null;
+  };
 
   const size = marker === 'headshot-56' ? 92 : marker === 'headshot-40' ? 62 : 38;
 
@@ -78,7 +84,7 @@ export const Scatter: React.FC<{
           return <Headshot key={r.id} src={r.headshot} x={px} y={py} size={s} ring={isActive ? T.bad : undefined} opacity={isActive ? 1 : 0.9} />;
         })}
       </Camera>
-      <AnnotationLayer ann={active?.annotation} progress={progress} />
+      <AccentLayer accents={active?.accents} progress={progress} resolve={resolve} />
     </>
   );
 };

@@ -2,7 +2,8 @@ import React from 'react';
 import { PLOT, T, TH, V, type } from '../theme';
 import { scaleLinear, niceTicks, binGrid, countRadius, fmt } from '../scale';
 import { PlotFrame } from '../chrome/PlotFrame';
-import { AnnotationLayer, useBeat, type Beat } from '../motion';
+import { AccentLayer, useBeat, type Beat } from '../motion';
+import type { Anchor, Resolve } from '../accent';
 
 export type Dot = { id: string; name: string; last: string; x: number; y: number; pos?: string };
 
@@ -51,6 +52,11 @@ export const DotStrip: React.FC<{
   };
   const cellOf = new Map<string, { cx: number; cy: number }>();
   for (const c of cells) for (const it of c.items) cellOf.set(it.id, { cx: c.cx, cy: c.cy });
+
+  const resolve: Resolve = (a: Anchor) => {
+    const c = cellOf.get(a.entityId);
+    return c ? { x: PLOT.x + x(c.cx), y: PLOT.y + rowY(c.cy) } : null;
+  };
 
   const show = new Set([...labelIds, activeId].filter(Boolean) as string[]);
 
@@ -122,7 +128,7 @@ export const DotStrip: React.FC<{
       })()}
 
       <Key maxCount={maxCount} rMax={rMax} />
-      <AnnotationLayer ann={active?.annotation} progress={progress} />
+      <AccentLayer accents={active?.accents} progress={progress} resolve={resolve} />
     </>
   );
 };

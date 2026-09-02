@@ -2,3 +2,11 @@ node_modules/
 .cache/
 out/
 src/data/*.json
+content/sessions/
+projects/
+ui/dist/
+
+# scratch files tts.ts leaves behind while concatenating
+public/_raw-*.wav
+public/_sil-*.wav
+public/_concat-*.txt

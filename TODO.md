@@ -19,6 +19,16 @@ Ordered. Items 1 and 2 are done; **Now** is what comes next.
 
 ## Now — content
 
+- [x] **A. Visual event density.** Beats carry accents[] in DATA space (Anchor = entityId + step) so nothing points at pixels; pathAt() draws lines continuously; camera is a push-and-release; render refuses <0.22/s and warns >0.45/s. C01F went 0.135 → 0.393 events/s.
+- [x] **Writer brief (stage-1 output → Gemini).** src/brief.ts emits out/brief-<id>.json: facts + machine-detected story markers + allowed_numbers + the 7 measured style rules + output schema. src/verify.ts rejects any draft with a fabricated number, unknown entity, bad accent, or broken rule.
+- [x] **Per-sentence seed + TTS cache.** Worker seeds torch (and MPS) per chunk with 1000+i; driver caches each chunk's WAV under sha1(text, seed, voice-file contents, exaggeration, cfg, temperature, CACHE_VERSION). Editing one sentence now regenerates one sentence; an unchanged script costs 0 s and produces a byte-identical wav.
+- [ ] **Casting.** Seeds are positional (1000+i) so inserting a sentence shifts every later seed. Add an explicit per-chunk seed override in the script (`seeds?: number[]` on ScriptLine or per-beat) so a chosen take survives edits, plus a tiny CLI to render one sentence with seeds 1..N for audition.
+- [ ] **Filter award markers to the NBA era.** 20 of 29 markers are awards and most are college (AP All-American, Wooden, Naismith, Bob Cousy…) — noise for a career-points story. Keep only awards whose season ≥ the entity's first NBA season, or a whitelist (MIP, ROY, All-NBA, All-Rookie, 6MOY, DPOY, MVP, All-Star).
+- [x] **g2 demoted to a coverage note.** In basketball, a competitor covering a topic is evidence it lands, not a reason to skip — the source channel made the same salary-cap video forty times. Only overlap with our OWN catalogue is worth blocking, and that is g0. The YouTube probe stays as an informational line (how many similar videos, closest match) and never blocks Accept.
+- [ ] **Gate g4 (chart-fit).** The router is pure, but getting from a free-text `measurable_as` to a DataShape needs one cheap LLM call — do it in the same pass that wires Gemini.
+- [ ] **Wire Gemini.** Send the brief, parse the draft, run verifyDraft, re-prompt with the violations on failure. Key is GEMINI_API_KEY in ~/Documents/code/comic-book-pipeline/.env; prefer gemini-3.1-pro-preview.
+- [ ] **Entity resolver for hand-written SRT.** Match names in each cue to facts.entities; a cue with no name inherits the previous cue's entity.
+- [ ] **Portrait / accent collision.** The big portrait can sit on top of a spotlight or line head (seen on RJ Barrett). Nudge the portrait away from the active accent anchor.
 - [ ] **3. Topic generator.** The matrix that decides what to make:
       `{draft class} × {stat}`, `{30 teams} × {season}`, `{stat} × {milestone}`.
       Must record what has already shipped so it never repeats itself.

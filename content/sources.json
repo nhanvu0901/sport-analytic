@@ -1,0 +1,10 @@
+{
+  "discover": {
+    "domains": ["reddit.com", "theringer.com", "espn.com", "nba.com", "bleacherreport.com", "cbssports.com", "theathletic.com"],
+    "purpose": "Find questions fans actually ask."
+  },
+  "evidence": {
+    "domains": ["reddit.com", "theringer.com", "espn.com", "nba.com", "theathletic.com"],
+    "purpose": "Verify one selected candidate."
+  }
+}

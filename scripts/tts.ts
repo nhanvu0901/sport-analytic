@@ -63,7 +63,7 @@ const beats = lines.map((l, i) => {
     entityId: l.entityId,
     startMs: mine[0].startMs,
     endMs: mine[mine.length - 1].endMs,
-    annotation: l.annotation ?? undefined,
+    accents: l.accents ?? undefined,
   };
 }).filter(Boolean);
 
@@ -135,6 +135,9 @@ const out = {
   voice: process.env.CHATTERBOX_VOICE_WAV || '(built-in)',
   durationMs,
   beats, captions,
+  // Persisted so a future "casting" step can read/override a specific
+  // sentence's seed without regenerating the ones that already sound right.
+  chunks: res.perChunk.map((c) => ({ text: c.text, beatIndex: c.beatIndex, seed: c.seed, key: c.key, cached: c.cached })),
 };
 writeFileSync(join(process.cwd(), 'src/data', `timeline-${id}.json`), JSON.stringify(out, null, 1));
 console.log(`\n${(durationMs / 1000).toFixed(1)}s of narration (${(res.durationMs / 1000).toFixed(1)}s speech ` +

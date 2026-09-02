@@ -53,6 +53,14 @@ like the model degrading.
 the AI voice can be judged against the human host on identical material.
 `scripts/ab.ts` builds `out/ab/voice-ab.wav` — original, a beep, then ours.
 
+Each sentence gets its own seed (`1000 + i` by default) and its WAV is cached
+under a hash of the text, seed, voice file contents, and generation settings.
+Editing one sentence and re-running `scripts/tts.ts` then only re-synthesizes
+that sentence — the other, unchanged sentences replay byte-identical from
+`.cache/tts`, so the approved take never drifts. Bumping `CACHE_VERSION` in
+`src/tts/chatterbox.ts` invalidates the whole cache on purpose, for when the
+model or venv changes underneath it.
+
 ## What is here
 
 | Path | What it does |

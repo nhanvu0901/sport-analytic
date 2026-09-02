@@ -8,12 +8,12 @@ isolated venv and talk over a file.
 Protocol
 --------
   argv[1] = job JSON
-      {"chunks": [{"text": str, "exaggeration": float, "cfg_weight": float}, ...],
+      {"chunks": [{"text": str, "key": str, "seed": int, "exaggeration": float, "cfg_weight": float}, ...],
        "out_dir": str,
        "audio_prompt": str | null,   # reference wav = the voice to clone
        "temperature": float,
        "device": "mps" | "cuda" | "cpu" | null}
-  writes  out_dir/chunk_00000.wav, one per chunk, at the model's native rate
+  writes  out_dir/<key>.wav, one per chunk, at the model's native rate
   prints  one JSON line per finished chunk so a long run shows progress
 """
 from __future__ import annotations
@@ -54,7 +54,15 @@ def main() -> int:
     temperature = float(job.get("temperature", 0.8))
     for i, ch in enumerate(job["chunks"]):
         t = time.time()
+        key = ch["key"]
+        seed = int(ch["seed"])
         try:
+            # Seed BEFORE generate, per chunk: a global (or absent) seed means
+            # editing one sentence reshuffles the delivery of every other
+            # sentence too, and the approved take is lost.
+            torch.manual_seed(seed)
+            if device == "mps" and hasattr(torch, "mps") and hasattr(torch.mps, "manual_seed"):
+                torch.mps.manual_seed(seed)
             wav = model.generate(
                 ch["text"],
                 audio_prompt_path=prompt,
@@ -62,13 +70,13 @@ def main() -> int:
                 cfg_weight=float(ch.get("cfg_weight", 0.5)),
                 temperature=temperature,
             )
-            path = out_dir / f"chunk_{i:05d}.wav"
+            path = out_dir / f"{key}.wav"
             save_wav(path, wav, model.sr)
             sec = wav.shape[-1] / float(model.sr)
-            print(json.dumps({"i": i, "sec": round(sec, 4), "sr": int(model.sr),
-                              "gen_sec": round(time.time() - t, 1)}), flush=True)
+            print(json.dumps({"i": i, "key": key, "seed": seed, "sec": round(sec, 4),
+                              "sr": int(model.sr), "gen_sec": round(time.time() - t, 1)}), flush=True)
         except Exception as exc:            # one bad chunk must not lose the run
-            print(json.dumps({"i": i, "error": repr(exc)}), flush=True)
+            print(json.dumps({"i": i, "key": key, "seed": seed, "error": repr(exc)}), flush=True)
     return 0
 
 

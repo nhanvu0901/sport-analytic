@@ -1,21 +1,25 @@
 import React from 'react';
 import { interpolate, useCurrentFrame, useVideoConfig, Easing, Img } from 'remotion';
 import { PLOT, T, TH, V, type } from '../theme';
-import { fmt } from '../scale';
+import { fmt, easeOut } from '../scale';
+import { type Accent, type Resolve, accentProgress } from '../accent';
 
-/** A beat is one narrated sentence bound to one entity. Audio drives all of it. */
+export type { Accent, Resolve } from '../accent';
+
+/**
+ * A beat is one narrated sentence bound to one entity, carrying the visual
+ * accents that fire while it is spoken. Audio drives all of it.
+ *
+ * `accents` is what lifts the video off the 0.135 events/sec it used to sit at:
+ * one beat used to mean one visual event, and the competitor audit puts the
+ * winning band at 0.24–0.38.
+ */
 export type Beat = {
   entityId: string;
   startMs: number;
   endMs: number;
-  annotation?: Annotation;
+  accents?: Accent[];
 };
-
-export type Annotation =
-  | { kind: 'arrow'; from: [number, number]; to: [number, number]; label?: string }
-  | { kind: 'lasso'; at: [number, number]; rx?: number; ry?: number }
-  | { kind: 'callout'; at: [number, number]; text: string }
-  | { kind: 'refline'; y: number; label: string; width?: number };
 
 export const useMs = () => {
   const frame = useCurrentFrame();
@@ -52,7 +56,10 @@ export const Camera: React.FC<{
 }> = ({ stops = [], glideMs = 800, children }) => {
   const ms = useMs();
 
-  let f: Focus = stops.length ? stops[0].focus : NEUTRAL;
+  // Start NEUTRAL, not at stops[0]. Seeding from the first stop meant the
+  // camera was already zoomed at frame 0 and then never appeared to move —
+  // the transform was applied and completely invisible.
+  let f: Focus = NEUTRAL;
   for (let i = 0; i < stops.length; i++) {
     if (ms < stops[i].atMs) break;
     const from = i === 0 ? NEUTRAL : stops[i - 1].focus;
@@ -94,10 +101,12 @@ export const Scroll: React.FC<{
   const max = Math.max(0, contentHeight - viewport);
   const clamp = (o: number) => Math.max(0, Math.min(max, o - viewport * 0.42));
 
-  let y = stops.length ? clamp(stops[0].offset) : 0;
+  // Same bug as Camera had: seeding from stops[0] starts the list already
+  // scrolled, so the first glide is invisible.
+  let y = 0;
   for (let i = 0; i < stops.length; i++) {
     if (ms < stops[i].atMs) break;
-    const from = i === 0 ? clamp(stops[0].offset) : clamp(stops[i - 1].offset);
+    const from = i === 0 ? 0 : clamp(stops[i - 1].offset);
     const to = clamp(stops[i].offset);
     y = interpolate(ms, [stops[i].atMs, stops[i].atMs + glideMs], [from, to], {
       extrapolateLeft: 'clamp',
@@ -121,95 +130,124 @@ export function revealState(id: string, revealed: Set<string>, activeId?: string
   return { shown: false, opacity: 0, active: false };
 }
 
-/* --------------------------------------------------------------- 4 annotation
-   Marker-pen overlays. One per beat at most, drawn on as the line is spoken. */
-export const AnnotationLayer: React.FC<{ ann?: Annotation; progress: number }> = ({ ann, progress }) => {
-  if (!ann) return null;
-  const p = interpolate(progress, [0, 0.35], [0, 1], { extrapolateRight: 'clamp' });
+/* --------------------------------------------------------------- 4 accents
+   Marker overlays, resolved from DATA anchors by the chart that owns the
+   scales. Several can fire inside one beat — that is the point. */
+export const AccentLayer: React.FC<{
+  accents?: Accent[];
+  progress: number;
+  resolve: Resolve;
+}> = ({ accents, progress, resolve }) => {
+  if (!accents?.length) return null;
+  return (
+    <>
+      {accents.map((a, i) => (
+        <One key={i} accent={a} p={accentProgress(a, progress)} resolve={resolve} />
+      ))}
+    </>
+  );
+};
 
-  if (ann.kind === 'refline') {
-    const w = (ann.width ?? PLOT.w) * p;
+const One: React.FC<{ accent: Accent; p: number; resolve: Resolve }> = ({ accent, p, resolve }) => {
+  if (p <= 0) return null;
+  const pt = accent.at ? resolve(accent.at) : null;
+
+  if (accent.kind === 'refline') {
+    if (!pt) return null;
+    const y = pt.y - PLOT.y;
     return (
       <>
         <svg style={{ position: 'absolute', left: PLOT.x, top: PLOT.y, overflow: 'visible' }} width={PLOT.w} height={PLOT.h}>
-          <line x1={0} y1={ann.y} x2={w} y2={ann.y} stroke={T.capLine}
-            strokeWidth={TH.annotation.width + 2}
-            strokeDasharray={TH.annotation.voice === 'marker' ? '26 18' : '14 10'} strokeLinecap="butt" />
+          <line
+            x1={0} y1={y} x2={PLOT.w * p} y2={y}
+            stroke={T.capLine} strokeWidth={TH.annotation.width + 2}
+            strokeDasharray={TH.annotation.voice === 'marker' ? '26 18' : '14 10'}
+          />
         </svg>
-        <div
-          style={{
-            position: 'absolute', left: PLOT.x + 6, top: PLOT.y + ann.y + 12,
-            ...type.marker, color: T.capLine, opacity: p,
-            // 'marker' tilts like a pen; 'precise' sits square, like an analyst's note
-            transform: TH.annotation.voice === 'marker' ? 'rotate(-7deg)' : 'none',
-            letterSpacing: TH.annotation.voice === 'precise' ? '0.02em' : undefined,
-          }}
-        >
-          {ann.label}
-        </div>
+        {accent.text && (
+          <div
+            style={{
+              position: 'absolute', left: PLOT.x + 8, top: PLOT.y + y + 12,
+              ...type.marker, color: T.capLine, opacity: p,
+              transform: TH.annotation.voice === 'marker' ? 'rotate(-7deg)' : 'none',
+            }}
+          >
+            {accent.text}
+          </div>
+        )}
       </>
     );
   }
 
-  if (ann.kind === 'callout') {
+  if (accent.kind === 'callout') {
+    if (!pt) return null;
     return (
       <div
         style={{
-          position: 'absolute', left: ann.at[0], top: ann.at[1],
-          ...type.marker, color: T.bad, opacity: p, transform: `translate(-50%,-50%) scale(${0.9 + 0.1 * p})`,
+          position: 'absolute', left: pt.x, top: pt.y - 96,
+          ...type.marker, color: T.bad, opacity: p,
+          transform: `translate(-50%,0) scale(${0.9 + 0.1 * p})`, whiteSpace: 'nowrap',
         }}
       >
-        {ann.text}
+        {accent.text}
       </div>
     );
   }
 
-  if (ann.kind === 'lasso') {
-    const rx = ann.rx ?? 62, ry = ann.ry ?? 40;
+  if (accent.kind === 'spotlight') {
+    if (!pt) return null;
+    const rx = 78, ry = 52;
     const circ = 2 * Math.PI * Math.sqrt((rx * rx + ry * ry) / 2);
     return (
       <svg style={{ position: 'absolute', left: 0, top: 0, overflow: 'visible' }} width={V.W} height={V.H}>
         <ellipse
-          cx={ann.at[0]} cy={ann.at[1]} rx={rx} ry={ry}
-          fill="none" stroke={T.ink2} strokeWidth={7} strokeLinecap="round"
-          transform={`rotate(-12 ${ann.at[0]} ${ann.at[1]})`}
+          cx={pt.x} cy={pt.y} rx={rx} ry={ry}
+          fill="none" stroke={T.capLine} strokeWidth={TH.annotation.width}
+          transform={`rotate(-12 ${pt.x} ${pt.y})`}
           strokeDasharray={circ} strokeDashoffset={circ * (1 - p)}
         />
       </svg>
     );
   }
 
-  // arrow
-  const [x1, y1] = ann.from;
-  const [x2, y2] = ann.to;
-  const mx = x1 + (x2 - x1) * p, my = y1 + (y2 - y1) * p;
-  const ang = (Math.atan2(y2 - y1, x2 - x1) * 180) / Math.PI;
-  return (
-    <>
-      <svg style={{ position: 'absolute', left: 0, top: 0, overflow: 'visible' }} width={V.W} height={V.H}>
-        <line x1={x1} y1={y1} x2={mx} y2={my} stroke={T.capLine}
-          strokeWidth={TH.annotation.width}
-          strokeDasharray={TH.annotation.voice === 'marker' ? '24 16' : undefined} />
-        {p > 0.85 && (
-          <polygon
-            points="0,-13 26,0 0,13"
-            fill={T.capLine}
-            transform={`translate(${x2},${y2}) rotate(${ang})`}
+  if (accent.kind === 'arrow') {
+    if (!pt) return null;
+    // The arrow comes IN to the anchor from up-left, so it never needs
+    // hand-placed endpoints and never points at nothing.
+    const len = 210;
+    const x1 = pt.x - len * 0.78, y1 = pt.y - len * 0.62;
+    const mx = x1 + (pt.x - x1) * p, my = y1 + (pt.y - y1) * p;
+    const ang = (Math.atan2(pt.y - y1, pt.x - x1) * 180) / Math.PI;
+    return (
+      <>
+        <svg style={{ position: 'absolute', left: 0, top: 0, overflow: 'visible' }} width={V.W} height={V.H}>
+          <line
+            x1={x1} y1={y1} x2={mx} y2={my} stroke={T.capLine}
+            strokeWidth={TH.annotation.width}
+            strokeDasharray={TH.annotation.voice === 'marker' ? '24 16' : undefined}
+            strokeLinecap="round"
           />
+          {p > 0.9 && (
+            <polygon points="0,-13 26,0 0,13" fill={T.capLine} transform={`translate(${pt.x},${pt.y}) rotate(${ang})`} />
+          )}
+        </svg>
+        {accent.text && (
+          <div
+            style={{
+              position: 'absolute', left: x1, top: y1 - 72, ...type.marker,
+              color: T.ink2, opacity: p, transform: 'translateX(-46%)',
+              textAlign: 'center', width: 460, lineHeight: 1.05,
+            }}
+          >
+            {accent.text}
+          </div>
         )}
-      </svg>
-      {ann.label && (
-        <div
-          style={{
-            position: 'absolute', left: x1, top: y1 - 96, ...type.marker,
-            color: T.ink2, opacity: p, transform: 'translateX(-50%)', textAlign: 'center', width: 420,
-          }}
-        >
-          {ann.label}
-        </div>
-      )}
-    </>
-  );
+      </>
+    );
+  }
+
+  // zoom and fade are handled by the chart (camera / series opacity), not drawn
+  return null;
 };
 
 /* ---------------------------------------------------------------- 5 spotlight

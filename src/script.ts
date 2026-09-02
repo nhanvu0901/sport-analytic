@@ -1,4 +1,5 @@
-import type { Beat, Annotation } from './motion';
+import type { Beat } from './motion';
+import type { Accent } from './accent';
 import type { Caption } from './timeline';
 
 /**
@@ -15,7 +16,7 @@ const WORDS_PER_MIN = 165;
 const MS_PER_WORD = (60 / WORDS_PER_MIN) * 1000;
 const GAP_MS = 240;
 
-export type ScriptLine = { entityId: string; text: string; annotation?: Annotation };
+export type ScriptLine = { entityId: string; text: string; accents?: Accent[] };
 
 const weight = (word: string) => {
   const vowels = (word.toLowerCase().match(/[aeiouy]+/g) ?? []).length || 1;
@@ -35,7 +36,7 @@ export function buildTimeline(lines: ScriptLine[], startMs = 400) {
       captions.push({ text: w.replace(/[^\w'’"%$.,+\-→]/g, ''), startMs: t, endMs: t + dur });
       t += dur;
     }
-    beats.push({ entityId: line.entityId, startMs: beatStart, endMs: t, annotation: line.annotation });
+    beats.push({ entityId: line.entityId, startMs: beatStart, endMs: t, accents: line.accents });
     t += GAP_MS;
   }
   return { beats, captions, durationMs: t };

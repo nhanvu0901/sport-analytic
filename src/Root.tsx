@@ -38,17 +38,6 @@ const cumAudio = cumMeasured?.audio;
 const fullMeasured = loadTimeline('C01F');
 const full = fullMeasured ?? buildTimeline(SCRIPTS.C01F);
 const fullAudio = fullMeasured?.audio;
-// the reference line needs the y position of Morant's total, which only the
-// chart knows; patch it once here rather than duplicating the scale.
-{
-  const yOf = (v: number) => PLOT.h - (v / 9000) * PLOT.h;
-  const morant = cumulative.series.find((x) => x.name === 'Ja Morant');
-  for (const tl of [cum, full]) {
-    const b = tl.beats[1];
-    if (b?.annotation?.kind === 'refline' && morant) b.annotation.y = yOf(morant.total);
-  }
-}
-
 /* ---------------------------------------------------------- generic scripts */
 const listScript = (rows: { id: string; name: string }[], say: (r: any) => string, pick: number[]) =>
   pick.filter((i) => rows[i]).map((i) => ({ entityId: rows[i].id, text: say(rows[i]) }));
