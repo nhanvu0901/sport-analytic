@@ -61,6 +61,18 @@ that sentence — the other, unchanged sentences replay byte-identical from
 `src/tts/chatterbox.ts` invalidates the whole cache on purpose, for when the
 model or venv changes underneath it.
 
+### Writing a script with Gemini
+
+No Gemini API key anywhere — the loop is paste-based, on purpose:
+
+1. `npx tsx scripts/brief.ts <id>` — writes `out/brief-<id>.json` and `out/brief-<id>.md`.
+2. Paste `prompts/WRITER_SKILL.md` into Gemini once, at the top of a chat (it carries the seven measured style rules and the accent contract; it does not change per video).
+3. Paste `out/brief-<id>.md` — the facts, markers, and allowed numbers for this one video.
+4. Save Gemini's reply to a file (a leading/trailing fence, stray prose, or a trailing comma are all fine — the parser tolerates them).
+5. `npm run draft <id> <path-to-the-reply>` — or `npm run draft <id> -` to pipe it in on stdin.
+
+A failed verify writes nothing: it prints every broken rule as `beat <n> · <rule> · <detail>` and exits 1, so paste the fixed reply back into the same command. A verified draft becomes `out/draft-<id>.json`, which `npx tsx scripts/tts.ts <id> out/draft-<id>.json` narrates exactly like a hardcoded `SCRIPTS[id]` script.
+
 ## What is here
 
 | Path | What it does |

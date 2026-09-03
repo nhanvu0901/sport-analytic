@@ -1,4 +1,4 @@
-import type { Candidate, LedgerRecord, Session } from './types';
+import type { BriefStored, Candidate, DraftResult, LedgerRecord, Session } from './types';
 
 async function toJson<T>(res: Response): Promise<T> {
   if (!res.ok) {
@@ -24,6 +24,11 @@ export const api = {
     const qs = new URLSearchParams(Object.entries(params).filter(([, v]) => v) as [string, string][]);
     return fetch(`/api/ledger?${qs}`).then((r) => toJson<LedgerRecord[]>(r));
   },
+  buildBrief: (id: string) => post(`/api/sessions/${id}/brief`, {}).then((r) => toJson<{ jobId: string }>(r)),
+  // 404 is an expected "nothing built yet" state here, not an error to throw.
+  getBrief: (id: string) => fetch(`/api/sessions/${id}/brief`).then((r) => (r.ok ? toJson<BriefStored>(r) : null)),
+  verifyDraft: (id: string, text: string) => post(`/api/sessions/${id}/draft`, { text }).then((r) => toJson<DraftResult>(r)),
+  skill: () => fetch('/api/skill').then((r) => r.text()),
 };
 
 export type JobDone = { status: 'done' | 'failed'; result?: unknown; error?: string };

@@ -2,18 +2,26 @@
  * Phase 1 API: topic discovery + the ledger. Also the job/SSE skeleton phase
  * 2 reuses as-is for TTS/render — see server/jobs.ts.
  */
-import { readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import cors from 'cors';
 import express, { type NextFunction, type Request, type Response } from 'express';
+import { briefFromCandidate } from '../src/candidateBrief';
 import { runDiscovery, nextAngle } from '../src/content/discover';
 import { appendLedger, contentRoot, readLedger } from '../src/content/ledger';
 import { createSession, listSessions, loadSession, readCandidates, saveSession, writeCandidates } from '../src/content/sessions';
 import type { LedgerStatus } from '../src/content/types';
 import { readKey } from '../src/content/youcom';
+import { parseDraftText, verifyDraft } from '../src/verify';
 import { getJob, onJobDone, onJobLog, startJob } from './jobs';
 
-const PORT = 4310;
+const outDir = () => join(process.cwd(), 'out');
+const briefJsonPath = (sessionId: string) => join(outDir(), `brief-${sessionId}.json`);
+const briefMdPath = (sessionId: string) => join(outDir(), `brief-${sessionId}.md`);
+
+// Overridable so a second instance can run alongside the one already in use
+// on 4310 (e.g. for isolated testing) without either one being killed.
+const PORT = Number(process.env.PORT) || 4310;
 const app = express();
 app.use(cors());
 app.use(express.json());
@@ -178,6 +186,120 @@ app.get('/api/ledger', (req, res) => {
   }
   records.sort((a, b) => b.at.localeCompare(a.at));
   res.json(records);
+});
+
+app.post(
+  '/api/sessions/:id/brief',
+  asyncRoute(async (req, res) => {
+    let session;
+    try {
+      session = loadSession(req.params.id);
+    } catch {
+      res.status(404).json({ error: 'session not found' });
+      return;
+    }
+    if (session.state !== 'accepted' || !session.accepted_candidate_id) {
+      res.status(400).json({ error: `session is '${session.state}', not accepted` });
+      return;
+    }
+    const candidate = readCandidates(session.id, session.revision).find((c) => c.id === session.accepted_candidate_id);
+    if (!candidate) {
+      res.status(400).json({ error: 'accepted candidate not found in the latest revision' });
+      return;
+    }
+
+    const job = startJob('brief', async (log) => {
+      const result = await briefFromCandidate(candidate, { log });
+      if (!result.ok) {
+        // A candidate our data cannot answer is a normal outcome, not a job
+        // failure — nothing is written to out/, and the UI reads `ok:false`
+        // off the job's own result, same shape as a resolved success.
+        return { ok: false, reason: result.reason, resolved: result.resolved };
+      }
+      mkdirSync(outDir(), { recursive: true });
+      writeFileSync(briefJsonPath(session.id), JSON.stringify(result.brief, null, 2));
+      writeFileSync(briefMdPath(session.id), result.md);
+      return {
+        ok: true,
+        md: result.md,
+        warnings: result.warnings,
+        resolved: result.resolved,
+        chart: result.brief.visual.chart,
+        entities: result.brief.facts.entities.length,
+      };
+    });
+    res.json({ jobId: job.id });
+  })
+);
+
+app.get('/api/sessions/:id/brief', (req, res) => {
+  const jsonPath = briefJsonPath(req.params.id);
+  const mdPath = briefMdPath(req.params.id);
+  if (!existsSync(jsonPath) || !existsSync(mdPath)) {
+    res.status(404).json({ error: 'no brief for this session yet' });
+    return;
+  }
+  // warnings/resolved are the JOB's own transient output (a "here is what I
+  // found" narration), never persisted alongside the brief files — a page
+  // reload gets the brief back, but not the original run's side notes.
+  const brief = JSON.parse(readFileSync(jsonPath, 'utf8'));
+  const md = readFileSync(mdPath, 'utf8');
+  res.json({ ok: true, md, chart: brief.visual.chart, entities: brief.facts.entities.length });
+});
+
+app.post('/api/sessions/:id/draft', (req, res) => {
+  const { text } = req.body ?? {};
+  if (typeof text !== 'string' || !text.trim()) {
+    res.status(400).json({ error: 'text is required' });
+    return;
+  }
+  const briefPath = briefJsonPath(req.params.id);
+  if (!existsSync(briefPath)) {
+    res.status(400).json({ error: 'no brief for this session yet — build one first' });
+    return;
+  }
+  const brief = JSON.parse(readFileSync(briefPath, 'utf8'));
+
+  const parsed = parseDraftText(text);
+  if (!parsed.ok) {
+    // No separate "parse error" shape in the contract — a parse failure is
+    // reported through the same violations list a verify failure uses.
+    res.json({ ok: false, violations: [{ beat: null, rule: 'parse', detail: parsed.error }] });
+    return;
+  }
+  const violations = verifyDraft(parsed.draft, brief);
+  if (violations.length > 0) {
+    res.json({ ok: false, violations });
+    return;
+  }
+
+  const WORDS_PER_SECOND = 2.9; // matches verifyDraft's own default
+  const totalWords = parsed.draft.beats.reduce((n, b) => n + b.text.split(/\s+/).filter(Boolean).length, 0);
+  const totalAccents = parsed.draft.beats.reduce((n, b) => n + (b.accents?.length ?? 0), 0);
+  const seconds = totalWords / WORDS_PER_SECOND;
+  const events = parsed.draft.beats.length + totalAccents;
+  const perSecond = seconds > 0 ? events / seconds : 0;
+
+  // Never write a draft that failed verification — only reachable here once
+  // violations.length === 0 above.
+  mkdirSync(outDir(), { recursive: true });
+  writeFileSync(join(outDir(), `draft-${req.params.id}.json`), JSON.stringify(parsed.draft, null, 2));
+
+  res.json({
+    ok: true,
+    summary: {
+      beats: parsed.draft.beats.length,
+      words: totalWords,
+      durationS: Number(seconds.toFixed(1)),
+      events,
+      perSecond: Number(perSecond.toFixed(3)),
+      band: [brief.visual.density.floor, brief.visual.density.ceiling],
+    },
+  });
+});
+
+app.get('/api/skill', (_req, res) => {
+  res.type('text/plain').send(readFileSync(join(process.cwd(), 'prompts', 'WRITER_SKILL.md'), 'utf8'));
 });
 
 app.get('/api/jobs/:id/events', (req, res) => {

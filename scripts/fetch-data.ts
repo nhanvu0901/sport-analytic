@@ -170,6 +170,12 @@ const series = await pool(CLASS_2019, 4, async (name) => {
     total: pts.at(-1)!.value,
     points: pts,
     headshot: headshot(id),
+    // ESPN's athlete detail returns `draft: null` specifically for a
+    // genuinely undrafted player (verified against Naz Reid) — it never
+    // omits the field ambiguously — so `?? null` here is a confirmed
+    // undrafted, not a guess. Contrast candidateBrief.ts, which has no way
+    // to look this up at all and must pass `undefined` instead. See
+    // BriefEntity.pick in src/brief.ts for why the two must stay distinct.
     pick: detail.draft?.selection ?? null,
   };
 });

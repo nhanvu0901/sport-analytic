@@ -83,6 +83,11 @@ body {
   border-bottom: 2px solid var(--accent);
 }
 
+.sidebar nav button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
 .health {
   margin-top: auto;
   display: flex;
@@ -538,4 +543,69 @@ th {
 
 .status-candidate {
   color: var(--info);
+}
+
+/* ------------------------------------------------------------ brief screen */
+
+.brief-header {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* Same accent-coded failure styling as .gate-fail-line, but sized as a
+   banner: a candidate our data cannot answer is a normal outcome, worded
+   plainly, not an alarm. */
+.banner-fail {
+  background: rgba(255, 90, 95, 0.1);
+  color: var(--accent);
+  border: 1px solid rgba(255, 90, 95, 0.35);
+  border-radius: 4px;
+  padding: 8px 10px;
+  font-size: 13px;
+}
+
+.copy-row {
+  display: flex;
+  gap: 8px;
+}
+
+.hint-line {
+  color: var(--ink3);
+  font-size: 12px;
+}
+
+.brief-pre {
+  background: var(--surface);
+  border: 1px solid #262b36;
+  border-radius: 6px;
+  padding: 14px;
+  max-height: 50vh;
+  overflow: auto;
+  white-space: pre-wrap;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink);
+}
+
+.draft-textarea {
+  width: 100%;
+  resize: vertical;
+  font-family: var(--mono);
+}
+
+.violations {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.violation-line {
+  color: var(--accent);
+  font-size: 12px;
+}
+
+.summary-line {
+  color: var(--good);
+  font-size: 13px;
 }

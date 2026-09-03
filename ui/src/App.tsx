@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { api, subscribeJob } from './api';
-import type { Candidate, Coverage, GateVerdict, Gates, LedgerRecord, Session } from './types';
+import type { BriefJobResult, BriefStored, Candidate, Coverage, DraftResult, GateVerdict, Gates, LedgerRecord, Session, Violation } from './types';
 
-type Screen = 'discover' | 'ledger';
+type Screen = 'discover' | 'ledger' | 'brief';
 type HealthKeys = { youcom: boolean; gemini: boolean; tavily: boolean };
 type Angles = { evergreen: string[]; newsy: string[]; next: { evergreen: string; newsy: string } };
 
@@ -80,10 +80,12 @@ function CandidateCard({
   candidate,
   accepted,
   onDecide,
+  onOpenBrief,
 }: {
   candidate: Candidate;
   accepted: boolean;
   onDecide: (candidateId: string, decision: 'accept' | 'reject', note?: string) => void;
+  onOpenBrief: () => void;
 }) {
   const [rejecting, setRejecting] = useState(false);
   const [note, setNote] = useState('');
@@ -161,6 +163,13 @@ function CandidateCard({
           </button>
         </div>
       )}
+      {accepted && (
+        <div className="card-actions">
+          <button className="btn btn-good" onClick={onOpenBrief}>
+            Open brief →
+          </button>
+        </div>
+      )}
       {rejecting && (
         <div className="reject-box">
           <textarea
@@ -186,7 +195,17 @@ function CandidateCard({
   );
 }
 
-function DiscoverScreen({ health, angles }: { health: { ok: boolean; keys: HealthKeys } | null; angles: Angles | null }) {
+function DiscoverScreen({
+  health,
+  angles,
+  onAccepted,
+  onOpenBrief,
+}: {
+  health: { ok: boolean; keys: HealthKeys } | null;
+  angles: Angles | null;
+  onAccepted: (sessionId: string) => void;
+  onOpenBrief: () => void;
+}) {
   const [lanes, setLanes] = useState({ evergreen: true, newsy: true });
   const [intent, setIntent] = useState('');
   const [session, setSession] = useState<Session | null>(null);
@@ -246,6 +265,7 @@ function DiscoverScreen({ health, angles }: { health: { ok: boolean; keys: Healt
     api.decide(session.id, candidateId, decision, note).then(({ session: updated }) => {
       setSession(updated);
       refreshSessions();
+      if (updated.state === 'accepted') onAccepted(updated.id);
     });
   };
 
@@ -318,7 +338,13 @@ function DiscoverScreen({ health, angles }: { health: { ok: boolean; keys: Healt
 
       <div className="card-grid">
         {candidates.map((c) => (
-          <CandidateCard key={c.id} candidate={c} accepted={session?.accepted_candidate_id === c.id} onDecide={decide} />
+          <CandidateCard
+            key={c.id}
+            candidate={c}
+            accepted={session?.accepted_candidate_id === c.id}
+            onDecide={decide}
+            onOpenBrief={onOpenBrief}
+          />
         ))}
       </div>
 
@@ -409,10 +435,219 @@ function LedgerScreen() {
   );
 }
 
+/** Copies `text` to the clipboard, flipping `label`'s state to "Copied" for
+ *  ~1.5s. Returns whether it worked, so a caller with a visible <pre> (the
+ *  brief) can fall back to selecting that text when the clipboard API throws
+ *  — which it can, over plain http on some browsers. */
+async function copyWithFlip(text: string, setCopied: (v: boolean) => void): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function BriefScreen({ sessionId, onBack }: { sessionId: string; onBack: () => void }) {
+  const [session, setSession] = useState<Session | null>(null);
+  const [candidate, setCandidate] = useState<Candidate | null>(null);
+  const [briefResult, setBriefResult] = useState<BriefJobResult | BriefStored | null>(null);
+  const [running, setRunning] = useState(false);
+  const [log, setLog] = useState<string[]>([]);
+  const [copiedSkill, setCopiedSkill] = useState(false);
+  const [copiedBrief, setCopiedBrief] = useState(false);
+  const [skillError, setSkillError] = useState(false);
+  const [selectHint, setSelectHint] = useState(false);
+  const [draftText, setDraftText] = useState('');
+  const [verifying, setVerifying] = useState(false);
+  const [draftResult, setDraftResult] = useState<DraftResult | null>(null);
+  const preRef = useRef<HTMLPreElement>(null);
+
+  useEffect(() => {
+    setSession(null);
+    setCandidate(null);
+    setBriefResult(null);
+    setLog([]);
+    api
+      .session(sessionId)
+      .then(({ session, candidates }) => {
+        setSession(session);
+        setCandidate(candidates.find((c) => c.id === session.accepted_candidate_id) ?? null);
+      })
+      .catch(() => {});
+    api.getBrief(sessionId).then((r) => { if (r) setBriefResult(r); }).catch(() => {});
+  }, [sessionId]);
+
+  const buildBrief = () => {
+    setRunning(true);
+    setLog([]);
+    setBriefResult(null);
+    api.buildBrief(sessionId).then(({ jobId }) => {
+      subscribeJob(
+        jobId,
+        (line) => setLog((l) => [...l, line]),
+        (done) => {
+          setRunning(false);
+          setBriefResult(
+            done.status === 'done' ? (done.result as BriefJobResult) : { ok: false, reason: done.error || 'brief job failed', resolved: [] }
+          );
+        }
+      );
+    });
+  };
+
+  const copySkill = async () => {
+    setSkillError(false);
+    const text = await api.skill().catch(() => null);
+    if (text === null || !(await copyWithFlip(text, setCopiedSkill))) setSkillError(true);
+  };
+
+  const copyBrief = async () => {
+    if (!briefResult?.ok) return;
+    setSelectHint(false);
+    const worked = await copyWithFlip(briefResult.md, setCopiedBrief);
+    if (!worked) {
+      // Clipboard API threw — select the text in the <pre> instead so the
+      // user can still grab it with the keyboard.
+      const el = preRef.current;
+      if (el) {
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        const sel = window.getSelection();
+        sel?.removeAllRanges();
+        sel?.addRange(range);
+      }
+      setSelectHint(true);
+    }
+  };
+
+  const runVerify = () => {
+    if (!draftText.trim() || verifying) return;
+    setVerifying(true);
+    setDraftResult(null);
+    api
+      .verifyDraft(sessionId, draftText)
+      .then(setDraftResult)
+      .finally(() => setVerifying(false));
+  };
+
+  return (
+    <div className="screen">
+      <div className="brief-header">
+        <h2 className="card-question">{candidate?.question ?? 'Loading…'}</h2>
+        {candidate && (
+          <div className="chip-row">
+            <span className="chip">{candidate.angle}</span>
+            <span className="chip chip-lane">{candidate.lane}</span>
+          </div>
+        )}
+        <div className="session-header mono">session {sessionId}</div>
+      </div>
+
+      {!briefResult && (
+        <button className="btn btn-accent" disabled={running} onClick={buildBrief}>
+          {running ? 'Building…' : 'Build brief'}
+        </button>
+      )}
+
+      {(running || log.length > 0) && (
+        <div className="log-panel">
+          {running && <span className="pulse-dot" />}
+          <div className="log-lines mono">
+            {log.map((l, i) => (
+              <div key={i}>{l}</div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {briefResult && !briefResult.ok && (
+        <>
+          {/* A candidate our data cannot answer is a normal outcome, not an
+              error state — worded plainly, not alarm-red boilerplate. */}
+          <div className="banner-fail">{briefResult.reason}</div>
+          <button className="btn" onClick={onBack}>
+            Back to discover
+          </button>
+        </>
+      )}
+
+      {briefResult && briefResult.ok && (
+        <>
+          {'warnings' in briefResult && briefResult.warnings.length > 0 && (
+            <div className="banner-warn">
+              {briefResult.warnings.map((w, i) => (
+                <div key={i}>{w}</div>
+              ))}
+            </div>
+          )}
+
+          <div className="copy-row">
+            <button className="btn" onClick={copySkill}>
+              {copiedSkill ? 'Copied' : 'Copy skill (paste once)'}
+            </button>
+            <button className="btn" onClick={copyBrief}>
+              {copiedBrief ? 'Copied' : 'Copy brief'}
+            </button>
+          </div>
+          {skillError && <div className="mono hint-line">Clipboard blocked — open prompts/WRITER_SKILL.md manually.</div>}
+          {selectHint && <div className="mono hint-line">Select all + ⌘C</div>}
+
+          <pre ref={preRef} className="brief-pre">
+            {briefResult.md}
+          </pre>
+
+          <label className="mono hint-line">Paste Gemini's reply</label>
+          <textarea
+            className="draft-textarea"
+            rows={12}
+            value={draftText}
+            onChange={(e) => setDraftText(e.target.value)}
+            placeholder="Paste the JSON Gemini returned…"
+          />
+          <button className="btn btn-accent" disabled={!draftText.trim() || verifying} onClick={runVerify}>
+            {verifying ? 'Verifying…' : 'Verify'}
+          </button>
+
+          {draftResult && !draftResult.ok && (
+            <div className="violations">
+              {[...draftResult.violations]
+                .sort((a: Violation, b: Violation) => (a.beat ?? -1) - (b.beat ?? -1))
+                .map((v, i) => (
+                  <div key={i} className="violation-line mono">
+                    beat {v.beat ?? '-'} · {v.rule} · {v.detail}
+                  </div>
+                ))}
+            </div>
+          )}
+          {draftResult && draftResult.ok && (
+            <>
+              <div className="summary-line mono">
+                {draftResult.summary.beats} beats · {draftResult.summary.words} words · {draftResult.summary.durationS}s ·{' '}
+                {draftResult.summary.events} events · {draftResult.summary.perSecond.toFixed(3)} events/s (band{' '}
+                {draftResult.summary.band[0]}–{draftResult.summary.band[1]})
+              </div>
+              <div className="mono hint-line">
+                next: npx tsx scripts/tts.ts {sessionId} out/draft-{sessionId}.json
+              </div>
+            </>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 export default function App() {
   const [screen, setScreen] = useState<Screen>('discover');
   const [health, setHealth] = useState<{ ok: boolean; keys: HealthKeys } | null>(null);
   const [angles, setAngles] = useState<Angles | null>(null);
+  // The session most recently accepted — gates the Brief nav item and is
+  // what "Open brief →" jumps to. Lifted up here (out of DiscoverScreen) so
+  // both screens can see it without a router or a state library.
+  const [briefSessionId, setBriefSessionId] = useState<string | null>(null);
 
   useEffect(() => {
     api.health().then(setHealth).catch(() => {});
@@ -429,6 +664,14 @@ export default function App() {
           <button className={screen === 'discover' ? 'active' : ''} onClick={() => setScreen('discover')}>
             Discover
           </button>
+          <button
+            className={screen === 'brief' ? 'active' : ''}
+            disabled={!briefSessionId}
+            title={briefSessionId ? undefined : 'Accept a candidate first'}
+            onClick={() => setScreen('brief')}
+          >
+            Brief
+          </button>
           <button className={screen === 'ledger' ? 'active' : ''} onClick={() => setScreen('ledger')}>
             Ledger
           </button>
@@ -439,7 +682,18 @@ export default function App() {
           <HealthDot label="tavily" ok={!!keys?.tavily} />
         </div>
       </aside>
-      <main>{screen === 'discover' ? <DiscoverScreen health={health} angles={angles} /> : <LedgerScreen />}</main>
+      <main>
+        {screen === 'discover' && (
+          <DiscoverScreen
+            health={health}
+            angles={angles}
+            onAccepted={setBriefSessionId}
+            onOpenBrief={() => setScreen('brief')}
+          />
+        )}
+        {screen === 'brief' && briefSessionId && <BriefScreen sessionId={briefSessionId} onBack={() => setScreen('discover')} />}
+        {screen === 'ledger' && <LedgerScreen />}
+      </main>
     </div>
   );
 }

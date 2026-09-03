@@ -3,6 +3,18 @@ import redraft from './data/redraft.json';
 import leaderMatrix from './data/leaderMatrix.json';
 import waffle from './data/waffle.json';
 import type { ScriptLine } from './script';
+import type { Draft } from './verify';
+
+/**
+ * Maps a verified draft's beats onto the existing ScriptLine[] shape so
+ * scripts/tts.ts can narrate a Gemini-written script with no further
+ * changes. Only called on a draft that already passed verifyDraft — this
+ * function does not re-check anything, it just reshapes. `ending` has no
+ * ScriptLine equivalent (nothing downstream reads it yet) and is dropped.
+ */
+export function draftToScriptLines(draft: Draft): ScriptLine[] {
+  return draft.beats.map((b) => ({ entityId: b.entityId, text: b.text, accents: b.accents }));
+}
 
 /**
  * The narration. One source of truth: the renderer builds a fallback timeline

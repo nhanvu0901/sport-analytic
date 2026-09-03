@@ -144,6 +144,9 @@ export type DataAvailableResult = {
   resolved: { name: string; id: string | null }[];
   measure: MeasureProbe;
   note: string;
+  // What was actually checked, so the UI can show it rather than take the
+  // verdict on faith. `rows`/`sum` are 0 for an entity ESPN has nothing for.
+  probed: { name: string; id: string | null; rows: number; sum: number }[];
 };
 
 export async function gateDataAvailable(c: { entities: string[]; measurable_as: string }): Promise<DataAvailableResult> {
@@ -154,6 +157,7 @@ export async function gateDataAvailable(c: { entities: string[]; measurable_as: 
       resolved: [],
       measure,
       note: `no ESPN stat matches "${measure.label}" — advanced/derived measures (on-off, rim deterrence, net rating) are not in our sources`,
+      probed: [],
     };
   }
 
@@ -165,23 +169,47 @@ export async function gateDataAvailable(c: { entities: string[]; measurable_as: 
 
     const found = resolved.filter((r) => r.id);
     if (found.length === 0) {
-      return { verdict: 'fail', resolved, measure, note: `could not resolve any of: ${names.join(', ')}` };
+      return { verdict: 'fail', resolved, measure, note: `could not resolve any of: ${names.join(', ')}`, probed: [] };
     }
 
-    const first = found[0];
-    const stats = await api.athleteStats(first.id!);
-    const rows = seasonRows(stats, measure.category!, measure.espnLabel);
-    if (rows.length === 0) {
-      return { verdict: 'fail', resolved, measure, note: `${measure.espnLabel} not returned by ESPN for ${first.name}` };
+    // Probe EVERY resolved entity (up to 4), not just the first — checking
+    // only entity #1 is exactly how a candidate about Wilt Chamberlain's
+    // rebounds record passed g3 on LeBron James's data alone, while Wilt's
+    // own rebounds (the actual subject) came back 5 seasons of zeros.
+    const probed: { name: string; id: string | null; rows: number; sum: number }[] = [];
+    for (const r of found) {
+      const stats = await api.athleteStats(r.id!);
+      const rows = seasonRows(stats, measure.category!, measure.espnLabel);
+      const sum = rows.reduce((s, x) => s + x.value, 0);
+      probed.push({ name: r.name, id: r.id, rows: rows.length, sum });
     }
+
+    const usable = probed.filter((p) => p.rows > 0 && p.sum !== 0);
+    if (usable.length >= 2) {
+      return {
+        verdict: 'pass',
+        resolved,
+        measure,
+        probed,
+        note: `${usable.length}/${probed.length} probed entities have usable ${measure.espnLabel} data`,
+      };
+    }
+
+    const empty = probed.filter((p) => p.rows === 0).map((p) => p.name);
+    const zero = probed.filter((p) => p.rows > 0 && p.sum === 0).map((p) => p.name);
+    const detail = [
+      empty.length ? `no ${measure.espnLabel} rows for ${empty.join(', ')}` : null,
+      zero.length ? `${measure.espnLabel} is zero for ${zero.join(', ')}` : null,
+    ].filter(Boolean).join('; ');
     return {
-      verdict: 'pass',
+      verdict: 'fail',
       resolved,
       measure,
-      note: `${found.length}/${resolved.length} entities resolved; ${measure.espnLabel} present for ${first.name} (${rows.length} seasons)`,
+      probed,
+      note: `only ${usable.length}/${probed.length} probed entities have usable ${measure.espnLabel} data — ${detail}`,
     };
   } catch (e) {
     // A dead endpoint is not a verdict about the topic.
-    return { verdict: 'pending', resolved: [], measure, note: e instanceof Error ? e.message : String(e) };
+    return { verdict: 'pending', resolved: [], measure, note: e instanceof Error ? e.message : String(e), probed: [] };
   }
 }

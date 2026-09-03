@@ -74,3 +74,21 @@ export type LedgerRecord = {
   video?: string | null;
   views_7d?: number | null;
 };
+
+/** Mirrors src/candidateBrief.ts's ResolvedEntity. */
+export type ResolvedEntity = { name: string; id: string | null; source: 'espn' | 'hoopr' | 'unresolved' };
+
+/** Shape of the /brief job's own result — the live SSE `done` payload. */
+export type BriefJobResult =
+  | { ok: true; md: string; warnings: string[]; resolved: ResolvedEntity[]; chart: string; entities: number }
+  | { ok: false; reason: string; resolved: ResolvedEntity[] };
+
+/** Shape GET /api/sessions/:id/brief returns — narrower than BriefJobResult
+ *  because warnings/resolved are the job's transient output, never persisted. */
+export type BriefStored = { ok: true; md: string; chart: string; entities: number };
+
+export type Violation = { beat: number | null; rule: string; detail: string };
+
+export type DraftSummary = { beats: number; words: number; durationS: number; events: number; perSecond: number; band: [number, number] };
+
+export type DraftResult = { ok: true; summary: DraftSummary } | { ok: false; violations: Violation[] };

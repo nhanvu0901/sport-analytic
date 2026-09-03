@@ -2,19 +2,30 @@
  * Narrate a composition with local Chatterbox and write a real timeline.
  *
  *   npx tsx scripts/tts.ts C01
+ *   npx tsx scripts/tts.ts C01F out/draft-C01F.json
+ *
+ * Third argument (optional): path to an accepted out/draft-<id>.json —
+ * written by scripts/draft.ts once a Gemini-written script passes
+ * verifyDraft. When given, its beats are narrated via draftToScriptLines()
+ * instead of the hardcoded SCRIPTS[id] placeholder. Omit it to keep using
+ * SCRIPTS[id] exactly as before.
  *
  * Produces src/data/timeline-<id>.json: beats bound to measured audio spans,
  * and word-level captions. Root.tsx picks it up automatically and falls back to
  * the syllable estimate when it is absent.
  */
 import { execFileSync } from 'node:child_process';
-import { writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { writeFileSync, mkdirSync, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { synthesize, toSentences } from '../src/tts/chatterbox';
-import { SCRIPTS } from '../src/scripts';
+import { SCRIPTS, draftToScriptLines } from '../src/scripts';
+import type { Draft } from '../src/verify';
 
 const id = (process.argv[2] ?? 'C01').toUpperCase();
-const lines = SCRIPTS[id];
+const draftPath = process.argv[3];
+const lines = draftPath
+  ? draftToScriptLines(JSON.parse(readFileSync(draftPath, 'utf8')) as Draft)
+  : SCRIPTS[id];
 if (!lines) throw new Error(`no script for ${id}. Have: ${Object.keys(SCRIPTS).join(', ')}`);
 
 // One chunk per sentence: the sentence boundary is where the measurement is

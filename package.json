@@ -10,6 +10,7 @@
     "video": "remotion render src/index.ts",
     "test": "tsx scripts/test-scales.ts",
     "brief": "tsx scripts/brief.ts",
+    "draft": "tsx scripts/draft.ts",
     "server": "tsx server/index.ts",
     "ui": "concurrently -k \"tsx server/index.ts\" \"vite --config ui/vite.config.ts\""
   },

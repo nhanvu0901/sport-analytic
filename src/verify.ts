@@ -13,6 +13,44 @@ export type Draft = {
 
 export type Violation = { beat: number | null; rule: string; detail: string };
 
+/**
+ * A chat box never returns clean JSON. Strip what it reliably adds — a
+ * ```json fence around the whole reply, "Here is the script:" before it,
+ * chatter after it, a trailing comma Gemini likes to leave — before parsing.
+ * Pure: no I/O, so the CLI and the tests can share it.
+ */
+export function parseDraftText(raw: string): { ok: true; draft: Draft } | { ok: false; error: string } {
+  let text = raw.trim();
+
+  // A whole-reply fence: ```json ... ``` or ``` ... ```.
+  if (text.startsWith('```')) {
+    text = text.replace(/^```[a-zA-Z]*\n?/, '').replace(/\n?```$/, '').trim();
+  }
+
+  // Prose before the first { and after the last } — "Here is the script:"
+  // preambles, trailing chatter. Slicing on brace position also mops up a
+  // fence that survived the step above (e.g. one with no closing newline).
+  const first = text.indexOf('{');
+  const last = text.lastIndexOf('}');
+  if (first === -1 || last === -1 || last < first) {
+    return { ok: false, error: `no JSON object found in the input. First 200 characters received:\n${raw.slice(0, 200)}` };
+  }
+  text = text.slice(first, last + 1);
+
+  // A trailing comma before a closing ] or }.
+  text = text.replace(/,(\s*[}\]])/g, '$1');
+
+  try {
+    const parsed = JSON.parse(text);
+    if (!parsed || typeof parsed !== 'object' || !Array.isArray((parsed as any).beats)) {
+      return { ok: false, error: `parsed JSON has no "beats" array. First 200 characters received:\n${raw.slice(0, 200)}` };
+    }
+    return { ok: true, draft: parsed as Draft };
+  } catch (e: any) {
+    return { ok: false, error: `${e.message}\nFirst 200 characters received:\n${raw.slice(0, 200)}` };
+  }
+}
+
 const CONNECTORS = /\b(and|but|then|while)\b/i;
 const SENTENCE_END = /[.!?](?:\s|$)/g;
 

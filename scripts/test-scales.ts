@@ -5,8 +5,11 @@ import { scaleLinear, niceTicks, fitRows, binGrid, countRadius, ensureContrast, 
 import teams from '../src/data/teams.json';
 import { eventDensity, DENSITY_FLOOR, accentProgress, ACCENT_KINDS } from '../src/accent';
 import { scrollOffsetAt, type ScrollStop } from '../src/motion';
-import { detectMarkers, allowedNumbers, STYLE_RULES, type BriefEntity, type WriterBrief } from '../src/brief';
-import { verifyDraft } from '../src/verify';
+import { detectMarkers, allowedNumbers, STYLE_RULES, assembleBrief, normaliseStep, type BriefEntity, type BriefInput, type Marker, type WriterBrief } from '../src/brief';
+import { deriveHookSeed, seasonUnion, seriesVerdict } from '../src/candidateBrief';
+import { verifyDraft, parseDraftText, type Draft } from '../src/verify';
+import { renderBriefMd } from '../src/briefMd';
+import { draftToScriptLines } from '../src/scripts';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -497,6 +500,133 @@ t('verifyDraft flags fabricated numbers, unknown entities, bad accent kinds, a n
     .some((v) => v.rule === 'one-sentence'));
 });
 
+/* --------------------------------------------------------------- briefMd.ts */
+
+const mdBrief = {
+  topic: {
+    id: 't1', question: 'Who scored the most?', angle: 'cohort-fate', lane: 'evergreen',
+    hook_seed: 'The favourite is not the leader.', why_fans_argue: 'People remember the pick, not the totals.',
+    evidence: ['https://example.com/one'],
+  },
+  visual: {
+    chart: 'cumulative-multiline', alternates: ['slope-pair'], camera: 'zoom-to-beat',
+    accent_kinds: ACCENT_KINDS, anchor_steps: ['2019-20', '2020-21', '2021-22'],
+    density: { floor: 0.22, ceiling: 0.45, target: 0.3 },
+  },
+  facts: {
+    unit: 'points', as_of: '2021-22',
+    entities: [
+      entity({
+        id: 'p1', name: 'Alpha One', first: 'Alpha', last: 'One', pick: 3, total: 500, rank: 1, seasons_played: 2,
+        // 2020-21 is skipped on purpose: a missed season must render as a
+        // dash in the season-by-season table, never a zero.
+        series: [{ step: '2019-20', value: 100 }, { step: '2021-22', value: 500 }],
+        awards: [
+          { name: 'Old College Honor', season: '2018' },   // predates the 2019-20 debut: must be dropped
+          { name: 'Third Team All-NBA', season: '2022' },  // after debut: must survive
+        ],
+      }),
+      entity({
+        id: 'p2', name: 'Beta Two', first: 'Beta', last: 'Two', pick: null, total: 200, rank: 2, seasons_played: 2,
+        series: [{ step: '2019-20', value: 80 }, { step: '2020-21', value: 200 }],
+        awards: [],
+      }),
+    ],
+    markers: [
+      { entityId: 'p1', kind: 'leader', detail: 'most in the class: 500', value: 500 },
+      { entityId: 'p1', kind: 'award', step: '2018', detail: 'Old College Honor (2018)' },
+      { entityId: 'p1', kind: 'award', step: '2022', detail: 'Third Team All-NBA (2022)' },
+      { entityId: 'p2', kind: 'undrafted', detail: 'went undrafted' },
+    ],
+    allowed_numbers: [1, 2, 3, 80, 100, 200, 500, 2018, 2019, 2020, 2021, 2022],
+  },
+  style: {
+    voice: '', rules: STYLE_RULES, duration_s: [40, 95] as [number, number], beats: [2, 3] as [number, number],
+    ending_variants: ['thesis', 'hard-cut', 'open-question'] as const,
+    forbidden: [],
+  },
+  output: {
+    format: 'json',
+    schema: {},
+    example: { title: 'Who scored the most?', beats: [{ text: 'Alpha One leads, but Beta Two is close.', entityId: 'p1', accents: [] }] },
+  },
+} as unknown as WriterBrief;
+
+const md = renderBriefMd(mdBrief);
+
+t('renderBriefMd contains every section heading', () => {
+  for (const h of ['# Brief — Who scored the most?', '## The tension', '## The story the numbers are hiding',
+                    '## The numbers', '## Season by season', '## What you may point at',
+                    '## Numbers you may use', '## Return this shape']) {
+    assert.ok(md.includes(h), `missing heading: ${h}`);
+  }
+});
+
+t('renderBriefMd renders a missed season as a dash, never a zero', () => {
+  assert.ok(md.includes('| Alpha One | 100 | — | 500 |'), 'expected a dash for the skipped 2020-21 column');
+});
+
+t('renderBriefMd drops an award that predates the entity\'s first NBA season, keeps a later one', () => {
+  assert.ok(!md.includes('Old College Honor'), 'a 2018 award for a 2019-20 debut must be omitted');
+  assert.ok(md.includes('Third Team All-NBA'), 'a 2022 award for a 2019-20 debut must survive');
+});
+
+t('renderBriefMd lists every entity in the id table', () => {
+  assert.ok(md.includes('| Alpha One | p1 |'));
+  assert.ok(md.includes('| Beta Two | p2 |'));
+});
+
+/* --------------------------------------------------------- verify.ts: parseDraftText */
+
+t('parseDraftText parses a bare object', () => {
+  const r = parseDraftText('{"title":"t","beats":[]}');
+  assert.equal(r.ok, true);
+  assert.equal((r as any).draft.title, 't');
+});
+
+t('parseDraftText strips a whole-reply ```json fence', () => {
+  const r = parseDraftText('```json\n{"title":"t","beats":[]}\n```');
+  assert.equal(r.ok, true);
+  assert.equal((r as any).draft.title, 't');
+});
+
+t('parseDraftText strips prose before the JSON ("Here is the script:")', () => {
+  const r = parseDraftText('Here is the script:\n{"title":"t","beats":[]}');
+  assert.equal(r.ok, true);
+  assert.equal((r as any).draft.title, 't');
+});
+
+t('parseDraftText tolerates a trailing comma', () => {
+  const r = parseDraftText('{"title":"t","beats":[1,2,],}');
+  assert.equal(r.ok, true);
+});
+
+t('parseDraftText returns ok:false with a non-empty error on garbage', () => {
+  const r = parseDraftText('this is not json at all, sorry');
+  assert.equal(r.ok, false);
+  assert.ok((r as any).error.length > 0);
+});
+
+/* --------------------------------------------------------- scripts.ts: draftToScriptLines */
+
+t('draftToScriptLines preserves beat order, entityId, and accents', () => {
+  const draft: Draft = {
+    title: 't',
+    beats: [
+      { text: 'First beat, and it starts strong.', entityId: 'p1',
+        accents: [{ t: 0.3, kind: 'zoom' }, { t: 0.7, kind: 'callout', text: '500' }] },
+      { text: 'Second beat, then it closes.', entityId: 'p2',
+        accents: [{ t: 0.4, kind: 'spotlight' }], ending: 'hard-cut' },
+    ],
+  };
+  const lines = draftToScriptLines(draft);
+  assert.equal(lines.length, 2);
+  assert.deepEqual(lines.map((l) => l.entityId), ['p1', 'p2']);
+  assert.deepEqual(lines.map((l) => l.text), draft.beats.map((b) => b.text));
+  assert.deepEqual(lines[0].accents, draft.beats[0].accents);
+  assert.deepEqual(lines[1].accents, draft.beats[1].accents);
+});
+
 /* --------------------------------------------------- content/ledger.ts, discover.ts */
 
 t('isBurned flags a re-skin (youcom_scout.py is_burned docstring example)', () => {
@@ -867,6 +997,170 @@ t('aggregateBox keeps different athlete ids separate', () => {
   assert.equal(out.size, 2);
   assert.equal(out.get('1')!.points, 10);
   assert.equal(out.get('2')!.points, 20);
+});
+
+/* ---------------------------------------------------- brief.ts: assembleBrief */
+
+const briefEntity = (over: Partial<BriefEntity>): BriefEntity => ({
+  id: '', name: '', first: '', last: '', pick: null, total: 0, rank: 0, seasons_played: 0,
+  series: [], awards: [], ...over,
+});
+
+const assembleInput: BriefInput = {
+  topic: { id: 't1', question: 'Who leads?', angle: 'cohort-fate', lane: 'evergreen', hook_seed: 'seed' },
+  unit: 'points',
+  seasons: ['2019-20', '2020-21', '2021-22'],
+  cumulative: true,
+  entities: [
+    // Given in a-b-c order on purpose: rank must come from `total`, not from
+    // array position, and the returned array must keep THIS order (matching
+    // buildBrief's own contract of never reordering facts.entities).
+    briefEntity({ id: 'a', name: 'A One', first: 'A', last: 'One', pick: 5, total: 300, seasons_played: 3,
+      series: [{ step: '2019-20', value: 100 }, { step: '2020-21', value: 200 }, { step: '2021-22', value: 300 }] }),
+    briefEntity({ id: 'b', name: 'B Two', first: 'B', last: 'Two', pick: 1, total: 500, seasons_played: 3,
+      series: [{ step: '2019-20', value: 150 }, { step: '2020-21', value: 400 }, { step: '2021-22', value: 500 }] }),
+    // Missing '2020-21' on purpose: the gap between two of C's own points.
+    briefEntity({ id: 'c', name: 'C Three', first: 'C', last: 'Three', pick: 10, total: 200, seasons_played: 2,
+      series: [{ step: '2019-20', value: 50 }, { step: '2021-22', value: 200 }] }),
+  ],
+};
+
+const assembled = assembleBrief(assembleInput);
+
+t('assembleBrief ranks by total, not by input order (b=1st, a=2nd, c=3rd)', () => {
+  const byId = new Map(assembled.facts.entities.map((e) => [e.id, e]));
+  assert.equal(byId.get('b')!.rank, 1);
+  assert.equal(byId.get('a')!.rank, 2);
+  assert.equal(byId.get('c')!.rank, 3);
+  // facts.entities itself keeps the CALLER's order (a, b, c) — only the rank
+  // field changes, the array is never re-sorted underneath the caller.
+  assert.deepEqual(assembled.facts.entities.map((e) => e.id), ['a', 'b', 'c']);
+});
+
+t('assembleBrief detects the missed-season gap for the entity with a hole', () => {
+  const missed = assembled.facts.markers.filter((m) => m.kind === 'missed-season');
+  assert.equal(missed.length, 1);
+  assert.equal(missed[0].entityId, 'c');
+  assert.equal(missed[0].step, '2020-21');
+});
+
+t('assembleBrief allowed_numbers contains every series value', () => {
+  const allowed = new Set(assembled.facts.allowed_numbers);
+  for (const v of [100, 200, 300, 150, 400, 500, 50]) assert.ok(allowed.has(v), `missing series value ${v}`);
+});
+
+t('assembleBrief is pure: the same input twice yields deep-equal output (generated timestamp aside)', () => {
+  const { generated: g1, ...rest1 } = assembleBrief(assembleInput);
+  const { generated: g2, ...rest2 } = assembleBrief(assembleInput);
+  assert.deepEqual(rest1, rest2);
+});
+
+/* ---------------------------------------------- candidateBrief.ts: pure parts */
+
+const marker = (kind: Marker['kind']): Marker => ({ entityId: 'x', kind, detail: 'x' });
+
+t('deriveHookSeed: leader beats undrafted beats missed-season', () => {
+  assert.equal(deriveHookSeed([marker('leader'), marker('undrafted')], 'fallback text.'),
+    'The name everyone expects is not the one on top.');
+  assert.equal(deriveHookSeed([marker('undrafted'), marker('missed-season')], 'fallback text.'),
+    'One of them was not drafted at all.');
+  assert.equal(deriveHookSeed([marker('missed-season')], 'fallback text.'),
+    'One of them lost a whole season.');
+});
+
+t('deriveHookSeed falls back to the first sentence of why_fans_argue when no marker matches', () => {
+  assert.equal(
+    deriveHookSeed([marker('award')], 'Fans argue this because the gap looks closer than it is. Second sentence.'),
+    'Fans argue this because the gap looks closer than it is.'
+  );
+});
+
+t('seasonUnion merges two entities\' steps ascending by leading year', () => {
+  const e1 = { series: [{ step: '2020-21' }, { step: '2022-23' }] };
+  const e2 = { series: [{ step: '2019-20' }, { step: '2020-21' }] };
+  assert.deepEqual(seasonUnion([e1, e2]), ['2019-20', '2020-21', '2022-23']);
+});
+
+/* --------------------------- Fix 1: undrafted must never fire on an unknown pick */
+
+t('detectMarkers: undrafted fires for pick:null, never for pick:undefined, and never for a numbered pick', () => {
+  const seasons = ['2019-20', '2020-21'];
+  const known = entity({ id: 'known', pick: null });
+  const unknown = entity({ id: 'unknown', pick: undefined });
+  const numbered = entity({ id: 'numbered', pick: 7 });
+  const markers = detectMarkers([known, unknown, numbered], seasons);
+  assert.ok(markers.some((m) => m.entityId === 'known' && m.kind === 'undrafted'));
+  assert.ok(!markers.some((m) => m.entityId === 'unknown' && m.kind === 'undrafted'),
+    'an unknown pick must never be reported as a fact of undraftedness');
+  assert.ok(!markers.some((m) => m.entityId === 'numbered' && m.kind === 'undrafted'));
+});
+
+/* -------------------- Fix 2: refuse an entity whose measure is empty/all-zero */
+
+t('seriesVerdict: empty series -> empty', () => {
+  assert.equal(seriesVerdict([], 5985).reason, 'empty');
+  assert.equal(seriesVerdict([], 5985).usable, false);
+});
+
+t('seriesVerdict: all zeros with a non-zero points total -> all-zero-data-hole (Wilt\'s rebounds)', () => {
+  const series = [{ step: '1969', value: 0 }, { step: '1970', value: 0 }];
+  const v = seriesVerdict(series, 5985);
+  assert.equal(v.reason, 'all-zero-data-hole');
+  assert.equal(v.usable, false);
+});
+
+t('seriesVerdict: all zeros with a zero points total -> all-zero-genuine', () => {
+  const series = [{ step: '2019-20', value: 0 }, { step: '2020-21', value: 0 }];
+  const v = seriesVerdict(series, 0);
+  assert.equal(v.reason, 'all-zero-genuine');
+  assert.equal(v.usable, false);
+});
+
+t('seriesVerdict: mixed values -> ok', () => {
+  const series = [{ step: '2019-20', value: 0 }, { step: '2020-21', value: 12 }];
+  const v = seriesVerdict(series, 12);
+  assert.equal(v.reason, 'ok');
+  assert.equal(v.usable, true);
+});
+
+/* --------------------------------------- Fix 4: one season-step format */
+
+t('normaliseStep: bare years become hyphenated seasons, hyphenated steps pass through', () => {
+  assert.equal(normaliseStep('1969'), '1968-69');
+  assert.equal(normaliseStep('2003-04'), '2003-04');
+  assert.equal(normaliseStep('2000'), '1999-00');   // zero-padding: "00", not "0"
+});
+
+t('a season union of bare years and hyphenated labels normalises and sorts correctly', () => {
+  const mixed = ['1969', '2003-04'].map(normaliseStep);
+  assert.deepEqual(mixed, ['1968-69', '2003-04']);
+  const e1 = { series: [{ step: normaliseStep('1969') }] };
+  const e2 = { series: [{ step: normaliseStep('2003-04') }] };
+  assert.deepEqual(seasonUnion([e1, e2]), ['1968-69', '2003-04']);
+});
+
+/* ------------------- deriveHookSeed must not read an unknown pick as a fact */
+
+t('deriveHookSeed falls through to why_fans_argue when the only undrafted-shaped markers came from unknown picks', () => {
+  // Build the fixture the way the real bug happened: an entity with
+  // pick: undefined must never produce an 'undrafted' marker in the first
+  // place, so deriveHookSeed here never even sees one to prefer.
+  const lebron = entity({ id: 'lebron', pick: undefined, rank: 2 });
+  const wilt = entity({ id: 'wilt', pick: undefined, rank: 1 });
+  const markers = detectMarkers([lebron, wilt], ['1968-69', '2003-04']);
+  assert.ok(!markers.some((m) => m.kind === 'undrafted'), 'unknown picks must not synthesize an undrafted marker');
+  assert.equal(
+    deriveHookSeed(markers, 'Fans argue Wilt\'s record is unbreakable. Second sentence.'),
+    'The name everyone expects is not the one on top.'   // rank:1 leader marker still fires for wilt — that's a real fact
+  );
+  // Isolate the undrafted precedence itself: strip the leader marker so
+  // nothing BUT an (absent) undrafted marker could win, and confirm the
+  // fallback to why_fans_argue actually happens.
+  const withoutLeader = markers.filter((m) => m.kind !== 'leader');
+  assert.equal(
+    deriveHookSeed(withoutLeader, 'Fans argue Wilt\'s record is unbreakable. Second sentence.'),
+    'Fans argue Wilt\'s record is unbreakable.'
+  );
 });
 
 console.log(`\n${n} assertions passed.`);
