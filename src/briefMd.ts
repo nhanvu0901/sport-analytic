@@ -11,6 +11,7 @@
  */
 import type { WriterBrief, BriefEntity } from './brief';
 import { fmt } from './scale';
+import { LENGTH_TOLERANCE } from './verify';
 
 /** Markdown table cells break on a bare `|` in the data (never happens for a
  *  player name today, but a name is still untrusted external text). */
@@ -54,8 +55,26 @@ export function renderBriefMd(b: WriterBrief): string {
   L.push(`# Brief — ${b.topic.question}`, '');
   L.push(
     `**Angle:** ${b.topic.angle} · **Lane:** ${b.topic.lane} · **Chart:** ${b.visual.chart} · ` +
-    `**Camera:** ${b.visual.camera} · **Duration:** ${b.style.duration_s[0]}–${b.style.duration_s[1]}s · ` +
-    `**Beats:** ${b.style.beats[0]}–${b.style.beats[1]}`,
+    `**Camera:** ${b.visual.camera} · **Beats:** ${b.style.beats[0]}–${b.style.beats[1]}`,
+    ''
+  );
+  // Length as ONE number, not the legal range. The range is what a Short may
+  // be; the target is what this script must be, and it has to appear as a
+  // countable word figure because that is the only unit a writer can hit on
+  // purpose — a draft written to the short end of a 40–95s range measures its
+  // accents against a 43s denominator and fails density for being brief.
+  const pct = Math.round(LENGTH_TOLERANCE * 100);
+  const lo = Math.round(b.style.target_words * (1 - LENGTH_TOLERANCE));
+  const hi = Math.round(b.style.target_words * (1 + LENGTH_TOLERANCE));
+  L.push(
+    `**Write ${b.style.target_words} words** — that is this video's target length ` +
+    `(≈ ${b.style.target_seconds}s spoken). Accepted: ${lo}–${hi} words (±${pct}%). ` +
+    `Legal outer bound ${b.style.duration_s[0]}–${b.style.duration_s[1]}s, but do not aim there.`,
+    ''
+  );
+  L.push(
+    `**Accent budget:** ${b.visual.accent_budget.total_min}–${b.visual.accent_budget.total_max} accents total ` +
+    `across all ${b.style.beats[0]}–${b.style.beats[1]} beats — ${b.visual.accent_budget.per_beat_hint}`,
     ''
   );
 

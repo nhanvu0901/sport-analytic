@@ -3,11 +3,11 @@ import assert from 'node:assert/strict';
 import { seasonRows, cumulate } from '../src/espn';
 import { scaleLinear, niceTicks, fitRows, binGrid, countRadius, ensureContrast, contrastRatio, pathAt, easeOut, rankPair, gridFit, waffleLayout, type Pt } from '../src/scale';
 import teams from '../src/data/teams.json';
-import { eventDensity, DENSITY_FLOOR, accentProgress, ACCENT_KINDS } from '../src/accent';
+import { eventDensity, DENSITY_FLOOR, DENSITY_CEILING, accentProgress, ACCENT_KINDS } from '../src/accent';
 import { scrollOffsetAt, type ScrollStop } from '../src/motion';
-import { detectMarkers, allowedNumbers, STYLE_RULES, assembleBrief, normaliseStep, type BriefEntity, type BriefInput, type Marker, type WriterBrief } from '../src/brief';
+import { detectMarkers, allowedNumbers, STYLE_RULES, assembleBrief, normaliseStep, computeAccentBudget, type BriefEntity, type BriefInput, type Marker, type WriterBrief } from '../src/brief';
 import { deriveHookSeed, seasonUnion, seriesVerdict } from '../src/candidateBrief';
-import { verifyDraft, parseDraftText, type Draft } from '../src/verify';
+import { verifyDraft, parseDraftText, WORDS_PER_SECOND, type Draft } from '../src/verify';
 import { renderBriefMd } from '../src/briefMd';
 import { draftToScriptLines } from '../src/scripts';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
@@ -22,6 +22,7 @@ import angles from '../content/angles.json';
 import type { LedgerRecord } from '../src/content/types';
 import { cacheKey, synthesize, type WorkerJob } from '../src/tts/chatterbox';
 import { normaliseName, stripSuffix, aggregateBox, resolveName, ambiguous, type BoxRow, type PlayerTotals } from '../src/hoopr';
+import { buildDraftSchema } from '../src/draftSchema';
 
 let n = 0;
 const t = (name: string, fn: () => void) => {
@@ -438,8 +439,14 @@ t('allowedNumbers carries totals, series values, split years, and 1..12 — noth
   assert.ok(!nums.has(999999), 'must not invent a number that appears nowhere');
 });
 
-t('STYLE_RULES is a fixed contract of exactly 7 rules', () => {
+t('STYLE_RULES is a fixed contract of exactly 7 rules, and the accent rule defers to the budget', () => {
   assert.equal(STYLE_RULES.length, 7);
+  const accentRule = STYLE_RULES.find((r) => r.includes('accent_budget'));
+  assert.ok(accentRule, 'one rule must point at visual.accent_budget');
+  // "2 or 3 accents" is arithmetically impossible at the top of the beat
+  // range (12 beats x 2 = 36 events at the 70s target, 0.514/s), so the
+  // contract must not state a fixed per-beat count at all.
+  assert.ok(!/2 or 3/.test(accentRule!), `rule must not restate a fixed per-beat count: ${accentRule}`);
 });
 
 /* ---------------------------------------------------------------- verify.ts */
@@ -500,6 +507,39 @@ t('verifyDraft flags fabricated numbers, unknown entities, bad accent kinds, a n
     .some((v) => v.rule === 'one-sentence'));
 });
 
+/* A season label is ONE token, not two numbers. The tokeniser used to split
+ * "2021-22" into "2021" (allowed, it is a season year) and "22" (not
+ * allowed), and rejected a valid draft for a number it never wrote. The fix
+ * must not soften the real check, so the same beat also carries a genuine
+ * fabrication: exactly one violation, and it names the fabrication. */
+const seasonBrief = {
+  ...miniBrief,
+  visual: { ...miniBrief.visual, anchor_steps: ['2019-20', '2020-21', '2021-22'] },
+} as unknown as WriterBrief;
+
+t('a season label is one token: "2021-22" passes while a fabricated "9,999" beside it still fires exactly once', () => {
+  const draft = {
+    title: 'test',
+    beats: [
+      { text: 'Alpha One leads the class in 2021-22, but Beta Two trails by only 9,999 points.', entityId: 'p1',
+        accents: [{ t: 0.3, kind: 'spotlight' as const, at: { entityId: 'p1' } },
+                  { t: 0.7, kind: 'callout' as const, at: { entityId: 'p1' }, text: '100' }] },
+      { text: 'Then Beta Two closes the gap, and finishes at 200 points.', entityId: 'p2',
+        accents: [{ t: 0.4, kind: 'zoom' as const, at: { entityId: 'p2' } },
+                  { t: 0.8, kind: 'refline' as const, at: { entityId: 'p2', step: '2020-21' }, text: '200' }],
+        ending: 'open-question' as const },
+    ],
+  };
+  const v = verifyDraft(draft, seasonBrief);
+  assert.equal(v.length, 1, `expected exactly one violation, got ${JSON.stringify(v)}`);
+  assert.equal(v[0].rule, 'fabricated-number');
+  assert.ok(v[0].detail.includes('9,999'), `the violation must name the fabricated number, got: ${v[0].detail}`);
+  // And a season the brief does not carry is still caught as a season.
+  const bogus = verifyDraft({ ...draft, beats: [{ ...draft.beats[0], text: 'Alpha One leads the class in 1996-97, and Beta Two trails.' }, draft.beats[1]] }, seasonBrief);
+  assert.ok(bogus.some((x) => x.rule === 'fabricated-number' && x.detail.includes('1996-97')),
+    `an unknown season label must still be rejected, got ${JSON.stringify(bogus)}`);
+});
+
 /* --------------------------------------------------------------- briefMd.ts */
 
 const mdBrief = {
@@ -512,6 +552,7 @@ const mdBrief = {
     chart: 'cumulative-multiline', alternates: ['slope-pair'], camera: 'zoom-to-beat',
     accent_kinds: ACCENT_KINDS, anchor_steps: ['2019-20', '2020-21', '2021-22'],
     density: { floor: 0.22, ceiling: 0.45, target: 0.3 },
+    accent_budget: { total_min: 15, total_max: 30, per_beat_hint: '2 per beat, 3 on at most 2 beats' },
   },
   facts: {
     unit: 'points', as_of: '2021-22',
@@ -541,7 +582,9 @@ const mdBrief = {
     allowed_numbers: [1, 2, 3, 80, 100, 200, 500, 2018, 2019, 2020, 2021, 2022],
   },
   style: {
-    voice: '', rules: STYLE_RULES, duration_s: [40, 95] as [number, number], beats: [2, 3] as [number, number],
+    voice: '', rules: STYLE_RULES, duration_s: [40, 95] as [number, number],
+    target_seconds: 70, target_words: 203,
+    beats: [2, 3] as [number, number],
     ending_variants: ['thesis', 'hard-cut', 'open-question'] as const,
     forbidden: [],
   },
@@ -574,6 +617,17 @@ t('renderBriefMd drops an award that predates the entity\'s first NBA season, ke
 t('renderBriefMd lists every entity in the id table', () => {
   assert.ok(md.includes('| Alpha One | p1 |'));
   assert.ok(md.includes('| Beta Two | p2 |'));
+});
+
+t('renderBriefMd states the word target and the accent budget as numbers, not ranges to interpret', () => {
+  // The word target must be a single countable figure. A brief that only
+  // showed "Duration: 40–95s" let a writer aim at 43s, where its own accent
+  // count measured 0.557 events/s and was rejected as too dense when it was
+  // in fact too short.
+  assert.ok(md.includes('**Write 203 words**'), 'expected the word target as one concrete number');
+  assert.ok(md.includes('173–233 words'), 'expected the accepted word window, derived from the tolerance');
+  assert.ok(md.includes('**Accent budget:** 15–30 accents total'), 'expected the total to appear as a concrete number');
+  assert.ok(!md.includes('**Duration:** 40–95s'), 'the outer legal range must not be offered as the thing to aim at');
 });
 
 /* --------------------------------------------------------- verify.ts: parseDraftText */
@@ -1053,6 +1107,191 @@ t('assembleBrief is pure: the same input twice yields deep-equal output (generat
   const { generated: g1, ...rest1 } = assembleBrief(assembleInput);
   const { generated: g2, ...rest2 } = assembleBrief(assembleInput);
   assert.deepEqual(rest1, rest2);
+});
+
+/* -------------------------------------------------- brief.ts: accent budget
+ *
+ * A per-beat accent COUNT cannot know how long a script will run once
+ * spoken; only an absolute total, sized to the brief's own target length,
+ * can. `computeAccentBudget` is that translation — and it has to subtract
+ * the beats, because `eventDensity` counts `beats.length + accents`: every
+ * beat is itself a visual event, spent before a single accent fires. The
+ * earlier version budgeted ceil(FLOOR*s)..floor(CEILING*s) accents and never
+ * subtracted them, handing out up to 31 accents on top of 8-12 beats at the
+ * 70s target: 39-43 events, 0.56-0.61 events/s, all of them rejected by the
+ * verifier that issued the budget. */
+
+t('computeAccentBudget pays for the beats first — the measured budget table', () => {
+  // seconds, beats, total_min, total_max. A degenerate [k, k] range pins an
+  // exact beat count, which is what each row of the table describes.
+  const table: [number, number, number, number][] = [
+    [70, 8, 8, 23],
+    [70, 10, 10, 21],
+    [70, 12, 12, 19],
+    [43.1, 8, 8, 11],
+  ];
+  for (const [seconds, beats, total_min, total_max] of table) {
+    const b = computeAccentBudget(seconds, [beats, beats]);
+    assert.equal(b.total_min, total_min, `${seconds}s / ${beats} beats: total_min`);
+    assert.equal(b.total_max, total_max, `${seconds}s / ${beats} beats: total_max`);
+  }
+  // The row that kills the old rule of thumb: at 70s with 12 beats, "2
+  // accents per beat" is 24 — over the 19 the budget allows. So the hint has
+  // to be derived from the budget, never state a fixed 2-or-3.
+  const twelve = computeAccentBudget(70, [12, 12]);
+  assert.ok(2 * 12 > twelve.total_max, 'a flat 2-per-beat must exceed the 12-beat budget at 70s');
+  assert.ok(!/2 or 3|2 per beat|3 per beat/.test(twelve.per_beat_hint),
+    `per_beat_hint must be derived, not a fixed per-beat count: ${twelve.per_beat_hint}`);
+  // Derived from the budget: 19 total - 12 beats = 7 accents left to spend
+  // beyond the one-per-beat floor.
+  assert.ok(twelve.per_beat_hint.includes('7 more'),
+    `hint must derive the spare from the budget and beat count: ${twelve.per_beat_hint}`);
+});
+
+t('computeAccentBudget over the whole 8-12 beat range is the envelope that stays legal at both ends', () => {
+  const b = computeAccentBudget(70, [8, 12]);
+  assert.equal(b.total_min, 12);   // max(12 beats x 1, ceil(0.22*70) - 8)
+  assert.equal(b.total_max, 19);   // floor(0.45*70) - 12
+  // The whole point of an envelope: every corner it permits must still land
+  // inside the density band verifyDraft applies to the finished draft.
+  const corners: [number, number][] = [
+    [8, b.total_min], [8, b.total_max], [12, b.total_min], [12, b.total_max],
+  ];
+  for (const [beatCount, accentCount] of corners) {
+    const perSecond: number = (beatCount + accentCount) / 70;
+    assert.ok(perSecond >= DENSITY_FLOOR && perSecond <= DENSITY_CEILING,
+      `${beatCount} beats + ${accentCount} accents = ${perSecond.toFixed(3)} events/s, outside the band`);
+  }
+});
+
+t('assembleBrief pins ONE target length and sizes the accent budget from it, not from duration_s', () => {
+  assert.deepEqual(assembled.style.duration_s, [40, 95]);   // outer LEGAL bound, unchanged
+  assert.deepEqual(assembled.style.beats, [8, 12]);
+  assert.equal(assembled.style.target_seconds, 70);
+  // Derived from the shared constant, never hardcoded: 70 * 2.9 = 203.
+  assert.equal(assembled.style.target_words, Math.round(70 * WORDS_PER_SECOND));
+  assert.equal(assembled.style.target_words, 203);
+  assert.equal(assembled.visual.accent_budget.total_min, 12);
+  assert.equal(assembled.visual.accent_budget.total_max, 19);
+});
+
+// verifyDraft's real density formula (src/verify.ts) counts each BEAT as an
+// event too, on top of its accents — `events = beats.length + totalAccents`.
+// A fixed "3 accents on every beat" rule ignores that beat-count term
+// entirely, which is exactly how a script that looks correct beat-by-beat
+// still overshoots the ceiling. The fixture below holds word count (and so
+// spoken seconds) fixed and varies only the accent count, at a duration
+// inside the brief's own [40,95]s target band, to demonstrate the real
+// (not the simplified "accents alone" rule-of-thumb) verdict: 3-per-beat
+// violates, 2-per-beat does not.
+const densityBrief = {
+  visual: {
+    chart: 'x', alternates: [], camera: 'static',
+    accent_kinds: ACCENT_KINDS, anchor_steps: [],
+    density: { floor: DENSITY_FLOOR, ceiling: DENSITY_CEILING, target: 0.30 },
+  },
+  facts: {
+    unit: 'points', as_of: '2025',
+    entities: [entity({ id: 'p1' })],
+    markers: [], allowed_numbers: [],
+  },
+  style: {
+    voice: '', rules: STYLE_RULES, duration_s: [40, 95] as [number, number],
+    target_seconds: 70, target_words: 203,
+    beats: [8, 12] as [number, number],
+    ending_variants: ['thesis', 'hard-cut', 'open-question'] as const,
+    forbidden: [],
+  },
+} as unknown as WriterBrief;
+
+// 22 words/beat x 10 beats = 220 words -> 220 / WORDS_PER_SECOND ~= 75.9s,
+// inside the brief's own [40,95]s target range.
+const wordBeat = (words: number, accents: number) => ({
+  text: Array.from({ length: words }, () => 'w').join(' '),
+  entityId: 'p1',
+  accents: Array.from({ length: accents }, (_, i) => ({ t: Number((i * 0.12).toFixed(2)), kind: 'zoom' as const })),
+});
+
+t('3 accents on every one of 10 beats overshoots the density ceiling, even though each beat is individually "2 or 3"', () => {
+  const beats = Array.from({ length: 10 }, () => wordBeat(22, 3));
+  const violations = verifyDraft({ title: 't', beats }, densityBrief);
+  assert.ok(violations.some((v) => v.rule === 'density'), 'expected a density violation at 3 accents/beat');
+});
+
+t('the identical script (same word count) at 2 accents on every beat stays inside the density band', () => {
+  const beats = Array.from({ length: 10 }, () => wordBeat(22, 2));
+  const violations = verifyDraft({ title: 't', beats }, densityBrief);
+  assert.ok(!violations.some((v) => v.rule === 'density'), 'did not expect a density violation at 2 accents/beat');
+});
+
+/* ------------------------------------------------------- verify.ts: length
+ *
+ * Density is a RATIO, so a script that is simply too short shows up in it as
+ * "too many accents". The measured case: 8 beats, 125 words, 16 accents — 24
+ * events over 43.1 spoken seconds, 0.557/s, rejected. The identical 16
+ * accents over the 203-word target measure 0.343/s and pass. Nothing was
+ * wrong with the accents; the script was 78 words short, and reporting that
+ * as `density` sends a reader hunting for accents to delete. */
+
+t('a 125-word draft is diagnosed as `length`, naming both counts — not as density alone', () => {
+  const beats = Array.from({ length: 8 }, (_, i) => wordBeat(i === 0 ? 20 : 15, 2));   // 20 + 7*15 = 125
+  const total = beats.reduce((n, b) => n + b.text.split(' ').length, 0);
+  assert.equal(total, 125, 'fixture must reproduce the measured 125-word draft');
+  const v = verifyDraft({ title: 't', beats }, densityBrief);
+  const len = v.find((x) => x.rule === 'length');
+  assert.ok(len, `expected a length violation against the 203-word target, got ${JSON.stringify(v.map((x) => x.rule))}`);
+  assert.ok(len!.detail.includes('125'), `must name the actual word count: ${len!.detail}`);
+  assert.ok(len!.detail.includes('203'), `must name the target word count: ${len!.detail}`);
+  assert.ok(len!.detail.includes('too short'), `must say which direction it is wrong in: ${len!.detail}`);
+});
+
+t('the same 8 beats and 16 accents at the 203-word target trip neither length nor density', () => {
+  const beats = Array.from({ length: 8 }, (_, i) => wordBeat(i === 0 ? 28 : 25, 2));   // 28 + 7*25 = 203
+  const total = beats.reduce((n, b) => n + b.text.split(' ').length, 0);
+  const accents = beats.reduce((n, b) => n + b.accents.length, 0);
+  assert.equal(total, 203);
+  assert.equal(accents, 16, 'the accent count is unchanged from the rejected draft — only the length is');
+  const v = verifyDraft({ title: 't', beats }, densityBrief);
+  assert.deepEqual(v.filter((x) => x.rule === 'length' || x.rule === 'density'), []);
+});
+
+/* ---------------------------------------------------------- draftSchema.ts
+ *
+ * OpenAI's strict structured-output mode (`codex exec --output-schema`)
+ * fails in ~4s with `"code":"invalid_json_schema"` the moment any object in
+ * the schema lists a key in `properties` that is missing from that same
+ * object's `required` array — measured directly against this project's own
+ * brief. Walk the whole schema recursively and enforce that invariant so a
+ * future edit to draftSchema.ts cannot silently reintroduce it. */
+
+function assertAllPropertiesRequired(node: any, path: string) {
+  if (!node || typeof node !== 'object') return;
+  if (node.properties && typeof node.properties === 'object') {
+    const propKeys = Object.keys(node.properties).sort();
+    const required = (node.required ?? []).slice().sort();
+    assert.deepEqual(required, propKeys, `${path}: every key in properties must appear in required`);
+    for (const [k, v] of Object.entries(node.properties)) assertAllPropertiesRequired(v, `${path}.${k}`);
+  }
+  if (node.items) assertAllPropertiesRequired(node.items, `${path}[]`);
+}
+
+t('buildDraftSchema: every object lists all of its properties as required (OpenAI strict mode)', () => {
+  assertAllPropertiesRequired(buildDraftSchema(), 'schema');
+});
+
+t('buildDraftSchema: matches the shape of verify.ts\'s Draft type', () => {
+  const schema = buildDraftSchema();
+  assert.deepEqual(schema.required, ['title', 'beats']);
+  const beat = schema.properties.beats.items;
+  assert.deepEqual([...beat.required].sort(), ['accents', 'ending', 'entityId', 'text']);
+  const accent = beat.properties.accents.items;
+  assert.deepEqual([...accent.required].sort(), ['at', 'kind', 't', 'text']);
+  assert.deepEqual(accent.properties.kind.enum, ACCENT_KINDS);
+  // Optional TS fields must be nullable, never just absent from `required`.
+  assert.ok((beat.properties.accents.type as string[]).includes('null'));
+  assert.ok((beat.properties.ending.type as string[]).includes('null'));
+  assert.ok((accent.properties.at.type as string[]).includes('null'));
+  assert.ok((accent.properties.text.type as string[]).includes('null'));
 });
 
 /* ---------------------------------------------- candidateBrief.ts: pure parts */

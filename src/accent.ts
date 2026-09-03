@@ -65,3 +65,22 @@ export function eventDensity(
  */
 export const DENSITY_FLOOR = 0.22;
 export const DENSITY_CEILING = 0.45;
+
+/**
+ * Per-beat accent bounds, as a closed interval.
+ *
+ * The floor is 1, not 2, and that is load-bearing: `eventDensity` above
+ * counts the BEAT ITSELF as an event, so a 12-beat script at the 70-second
+ * target paying "2 accents per beat" spends 12 + 24 = 36 events — 0.514/s,
+ * clear of the 0.45 ceiling — before the writer has written anything wrong.
+ * Two per beat is a preference the absolute budget in brief.ts grants only
+ * when the arithmetic leaves room for it; one per beat is the structural
+ * minimum that always holds, because a beat with NO accent is exactly the
+ * frozen picture the audit measured at 0.08 events/s.
+ *
+ * The ceiling of 3 is the same 3 `style.forbidden` names ("more than 3
+ * accents in one beat"): more than three emphases inside one spoken
+ * sentence stop reading as emphasis.
+ */
+export const MIN_ACCENTS_PER_BEAT = 1;
+export const MAX_ACCENTS_PER_BEAT = 3;

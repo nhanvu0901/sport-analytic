@@ -10,7 +10,7 @@
  */
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { parseDraftText, verifyDraft } from '../src/verify';
+import { parseDraftText, verifyDraft, WORDS_PER_SECOND } from '../src/verify';
 import type { WriterBrief } from '../src/brief';
 
 const id = process.argv[2];
@@ -44,7 +44,6 @@ if (violations.length > 0) {
   process.exit(1);
 }
 
-const WORDS_PER_SECOND = 2.9;   // matches verifyDraft's own default
 const totalWords = draft.beats.reduce((n, b) => n + b.text.split(/\s+/).filter(Boolean).length, 0);
 const totalAccents = draft.beats.reduce((n, b) => n + (b.accents?.length ?? 0), 0);
 const seconds = totalWords / WORDS_PER_SECOND;

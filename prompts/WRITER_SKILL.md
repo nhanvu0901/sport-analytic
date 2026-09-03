@@ -7,10 +7,26 @@ Then paste a brief. You will get one brief per video.
 
 ## What you are doing
 
-You write the spoken narration for a 40–95 second vertical video whose only
-picture is an animated chart of real NBA numbers. There is no host on screen,
-no footage, no music cue to hide behind. The voice and the chart are the whole
-video, so the writing carries it.
+You write the spoken narration for a vertical video whose only picture is an
+animated chart of real NBA numbers. There is no host on screen, no footage, no
+music cue to hide behind. The voice and the chart are the whole video, so the
+writing carries it.
+
+**Write 203 words.** That is the target — about 70 seconds at 2.9 spoken words
+per second — and it is a single number on purpose, not a range. Anything from
+173 to 233 words is accepted; outside that the script is rejected with the rule
+`length`, naming your word count and the target. 40–95 seconds is the outer
+legal bound for a Short, not something to aim at. The brief's own
+`style.target_words` and `style.target_seconds` are authoritative if they ever
+differ from the numbers here.
+
+Length is not a stylistic matter here, it is arithmetic: how much the chart is
+allowed to move is measured **per second of narration**, so a script that comes
+in short fails for its accents when what was actually wrong was the writing. A
+real draft ran 125 words with 8 beats and 16 accents — perfectly reasonable
+accents — and was rejected at 0.557 events/s. The same 16 accents over 203
+words measure 0.343 and pass. It did not write too many accents. It wrote too
+short.
 
 You also decide **when the chart moves**. That is not a separate job handed to
 someone else — each sentence you write comes with the visual accents that fire
@@ -97,15 +113,35 @@ Pick one and set `ending` on the final beat only:
 - **`hard-cut`** — stop on the payoff. No summary, no landing. Often strongest.
 - **`open-question`** — a question that invites an answer in the comments.
 
-### 7. Two or three accents per beat, at distinct times
+### 7. At least one accent per beat — the brief's total is the law
 
 The chart must keep moving. Measured: the four winning videos ran at
 **0.24–0.38 visual events per second**; the video that underperformed ran at
 0.08 and had a stretch where the picture simply froze.
 
-One beat firing one accent is not enough. Give each beat **2 or 3**, at `t`
-values at least `0.12` apart, and let the brief's `density` band tell you
-whether the total is right.
+A "visual event" is **a beat starting or an accent firing**. That mapping is
+the whole reason the counting works: a chart video has no cuts, so the closest
+equivalent to a competitor's cut is any discrete moment the picture changes,
+and a new beat changes it as surely as an accent does.
+
+Which means **the beats are already spending your budget before you place a
+single accent.** At the 203-word / 70-second target the whole script may spend
+31 visual events. Ten beats cost ten of them. So:
+
+- **Every beat fires at least 1 accent** and never more than 3, at `t` values
+  at least `0.12` apart. A beat with none is the frozen picture that measured
+  0.08.
+- **The script's total accent count is the law**, and for this format it is
+  **12 to 19 accents** across the whole script. The brief restates it as
+  `visual.accent_budget.total_min`–`total_max` for this specific video; that
+  is the authoritative figure.
+
+"2 accents on every beat" is a trap, and not a small one: at 12 beats that is
+24 accents, 36 events, **0.514 events/s** — over the 0.45 ceiling, from a rule
+that looks perfectly obedient beat by beat. At 8 beats it fits; at 12 it does
+not. Do not carry a fixed per-beat number in your head. Give every beat one
+accent, then spend the remainder — roughly 7 extra — on the beats that most
+need it: the flip, the payoff, a beat landing two numbers at once.
 
 ---
 
@@ -161,7 +197,10 @@ Only this JSON. No commentary before or after it, no markdown fence.
 - One entity per beat. A beat may mention others, but `entityId` is the one the
   chart follows.
 - `ending` appears on the last beat only.
-- Aim for the brief's `style.duration_s` — roughly 2.9 spoken words per second.
+- **203 words total** (accepted: 173–233) — that is `style.target_words`, at
+  roughly 2.9 spoken words per second. Count them before you hand it back.
+- 12–19 accents total across the whole script — that is
+  `visual.accent_budget`, and it is the absolute figure, not a per-beat one.
 
 ---
 
@@ -177,7 +216,12 @@ failure sends the whole script back with the violated rule named.
 - [ ] Every `entityId` appears in `facts.entities`.
 - [ ] Every `at.step` appears in `visual.anchor_steps`.
 - [ ] Every accent kind is one of the five.
-- [ ] Every beat has 2 or 3 accents, `t` values ≥ 0.12 apart.
+- [ ] Every beat has 1 to 3 accents, `t` values ≥ 0.12 apart — one on every
+      beat, extras only where they earn it.
+- [ ] The accent total across the whole script sits inside
+      `visual.accent_budget.total_min`–`total_max` (12–19 for this format).
+      Add them up; do not assume a per-beat count adds up correctly.
+- [ ] The word count is 203 ± 15% (173–233). Count it.
 - [ ] The flip sits between 40% and 70% of the beats.
 - [ ] Exactly one `ending`, on the last beat.
 

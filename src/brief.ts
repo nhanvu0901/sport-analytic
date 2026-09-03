@@ -7,7 +7,14 @@
 import cumulative from './data/cumulative.json';
 import { api } from './espn';
 import { route, type DataShape } from '../router/shape';
-import { ACCENT_KINDS, DENSITY_FLOOR, DENSITY_CEILING } from './accent';
+import { ACCENT_KINDS, DENSITY_FLOOR, DENSITY_CEILING, MIN_ACCENTS_PER_BEAT, MAX_ACCENTS_PER_BEAT } from './accent';
+// A value import, and safe: verify.ts imports ONLY types from this module
+// (`import type`), so the cycle is erased at compile time and there is no
+// runtime dependency in that direction. `target_words` below must be the
+// same words-per-second verifyDraft measures the finished draft against —
+// two copies of 2.9 is exactly the drift that lets a brief ask for a length
+// the verifier then rejects.
+import { WORDS_PER_SECOND } from './verify';
 
 export type Angle = 'verdict-revisited' | 'chase' | 'cohort-fate' | 'rank-inversion' | 'hidden-cost';
 export type Lane = 'evergreen' | 'newsy';
@@ -30,6 +37,23 @@ export type BriefEntity = {
   awards: { name: string; season: string }[];
 };
 
+/**
+ * How many accents the WHOLE script may spend, not per beat. A per-beat count
+ * ("2 or 3 accents") cannot know how long the script will end up once spoken
+ * — that is exactly why a writer following "3 on every beat" to the letter
+ * measured 0.521 events/s and was rejected: 3 x 10 beats is fine as a
+ * per-beat rule, wrong as a total. `total_min`/`total_max` translate the
+ * measured density band (accent.ts's DENSITY_FLOOR/CEILING) into a single
+ * absolute number for THIS video's target length; `per_beat_hint` spells the
+ * same budget out as a short instruction a writer can act on immediately.
+ *
+ * Crucially this is an ACCENT budget, not an event budget. `eventDensity`
+ * counts `beats.length + accents`, so the beats are events the script has
+ * already spent before a single accent fires; the accents get what is left
+ * over. See `computeAccentBudget`.
+ */
+export type AccentBudget = { total_min: number; total_max: number; per_beat_hint: string };
+
 export type WriterBrief = {
   version: 1;
   generated: string;                                  // ISO date
@@ -39,9 +63,24 @@ export type WriterBrief = {
     accent_kinds: readonly string[];                  // = ACCENT_KINDS
     anchor_steps: string[];                           // valid Anchor.step values = the season labels
     density: { floor: number; ceiling: number; target: number };
+    accent_budget: AccentBudget;
   };
   facts: { unit: string; as_of: string; entities: BriefEntity[]; markers: Marker[]; allowed_numbers: number[] };
-  style: { voice: string; rules: string[]; duration_s: [number, number]; beats: [number, number]; ending_variants: EndingVariant[]; forbidden: string[] };
+  style: {
+    voice: string; rules: string[];
+    /** The outer LEGAL bound — a draft outside it is not a Short any more. */
+    duration_s: [number, number];
+    /** The single length the writer aims at, inside `duration_s`. A range
+     *  cannot be aimed at: density is measured against the draft's ACTUAL
+     *  spoken length, so a 2.4x-wide target makes the accent budget
+     *  unbindable — 8 beats and 16 accents is 0.343 events/s at 70s and
+     *  0.557 at 43.1s, legal and rejected from the same draft. */
+    target_seconds: number;
+    /** `target_seconds` in words, at WORDS_PER_SECOND. This, not the second
+     *  count, is what a writer can actually count while writing. */
+    target_words: number;
+    beats: [number, number]; ending_variants: EndingVariant[]; forbidden: string[];
+  };
   output: { format: 'json'; schema: unknown; example: unknown };
 };
 
@@ -177,8 +216,76 @@ export const STYLE_RULES: string[] = [
   "Specific numbers, never vague ones: 7,331 — not 'over 7,000'. Every number must appear in facts.allowed_numbers.",
   'The flip — the moment the expectation breaks — lands between 40% and 70% of the runtime, never in the last beat.',
   'The last beat uses exactly one ending variant: thesis, hard-cut, or open-question.',
-  'Each beat carries 2 or 3 accents from visual.accent_kinds at distinct t values; total density stays inside visual.density.',
+  `Every beat fires at least ${MIN_ACCENTS_PER_BEAT} and at most ${MAX_ACCENTS_PER_BEAT} accents from visual.accent_kinds, at t values 0.12 apart; the script's TOTAL must land inside visual.accent_budget — that total, not a fixed per-beat count, is the law, because each beat is itself a visual event.`,
 ];
+
+/**
+ * Turn the measured density band into an absolute accent budget for one
+ * video.
+ *
+ * The arithmetic that was WRONG, and why: `eventDensity` (accent.ts) counts
+ * `beats.length + accents` — every beat is itself a visual event. An earlier
+ * version budgeted `ceil(FLOOR * seconds)` to `floor(CEILING * seconds)`
+ * accents and never subtracted the beats, so at the 70-second target it
+ * handed out up to 31 accents on top of 8-12 beats: 39-43 events, 0.56-0.61
+ * events/s, every one of them rejected by the verifier that issued the
+ * budget. The beats are paid for FIRST; the accents get the remainder:
+ *
+ *     total_max = floor(CEILING * seconds) - beats
+ *     total_min = max(beats, ceil(FLOOR * seconds) - beats)
+ *
+ * The `max(beats, ...)` term is the freeze guard: one accent per beat is the
+ * structural minimum (MIN_ACCENTS_PER_BEAT), because a beat with none is the
+ * frozen picture the audit measured at 0.08 events/s — even when the density
+ * floor alone would be satisfied with fewer.
+ *
+ * `beats` arrives as the brief's own RANGE, not a single count, and the
+ * budget has to hold everywhere inside it — the writer picks the beat count,
+ * not this function. So the two ends are used asymmetrically, giving the one
+ * envelope that is safe across the whole range: `total_max` subtracts the
+ * MOST beats the writer may spend (worst case for the ceiling) and
+ * `total_min` subtracts the FEWEST (worst case for the floor), while the
+ * freeze guard uses the most. Pass a degenerate range (`[12, 12]`) to budget
+ * an exact beat count.
+ *
+ * The arithmetic is stated, not clamped: at a short enough target the two
+ * ends cross (40s with 8-12 beats gives total_min 12 > total_max 6), because
+ * 12 beats cannot each carry an accent inside 18 events. That is a true
+ * report that the beat range does not fit the target, not a budget to
+ * silently repair — the fix is a shorter beat range or a longer target, and
+ * the only caller today (70s, 8-12 beats) is well clear of it.
+ *
+ * `seconds` is `style.target_seconds` — one pinned number, NOT the midpoint
+ * of `duration_s`. The midpoint was the second half of the same bug: the
+ * budget was sized for 67.5s while the draft it judged was free to run
+ * anywhere in [40, 95]s, so the same 16 accents were legal at 70s and 0.557
+ * events/s at 43.1s. Beat text does not exist yet at brief time, so there is
+ * no word count to run through WORDS_PER_SECOND — but there no longer needs
+ * to be one, because the brief now tells the writer the length to hit.
+ */
+export function computeAccentBudget(targetSeconds: number, beats: [number, number]): AccentBudget {
+  const [fewestBeats, mostBeats] = beats;
+  const eventFloor = Math.ceil(DENSITY_FLOOR * targetSeconds);
+  const eventCeiling = Math.floor(DENSITY_CEILING * targetSeconds);
+
+  const total_max = eventCeiling - mostBeats;
+  const total_min = Math.max(mostBeats * MIN_ACCENTS_PER_BEAT, eventFloor - fewestBeats);
+
+  // The hint is DERIVED, never a fixed "2 or 3": at 70s and 12 beats the
+  // budget is 12-19, and "2 per beat" (24) is already over it. So it is
+  // stated as the structural floor plus however many extras the budget
+  // actually leaves — capped by the per-beat ceiling, since a beat cannot
+  // absorb more than MAX_ACCENTS_PER_BEAT of them.
+  const spare = Math.max(0, Math.min(total_max - mostBeats, mostBeats * (MAX_ACCENTS_PER_BEAT - MIN_ACCENTS_PER_BEAT)));
+  const beatsLabel = fewestBeats === mostBeats ? `${mostBeats}` : `${fewestBeats}-${mostBeats}`;
+  // The totals are NOT restated here: `total_min`/`total_max` sit beside this
+  // string in the same object, and briefMd.ts prints them on the same line.
+  const per_beat_hint = spare > 0
+    ? `${MIN_ACCENTS_PER_BEAT} accent on every beat, then ${spare} more to spend across the ${beatsLabel} beats where they land hardest — never more than ${MAX_ACCENTS_PER_BEAT} in one beat`
+    : `exactly ${MIN_ACCENTS_PER_BEAT} accent on every beat, and no more — the beats alone already spend the budget`;
+
+  return { total_min, total_max, per_beat_hint };
+}
 
 /**
  * Everything a WriterBrief needs once the dataset is already resolved into
@@ -232,6 +339,22 @@ export function assembleBrief(input: BriefInput): WriterBrief {
   const exampleEntity = entities[0];
   const exampleStep = exampleEntity.series.at(-1)?.step;
 
+  // Defined once so `visual.accent_budget` and `style.target_seconds`/`beats`
+  // can never drift apart — the budget is meaningless if it is computed from
+  // a different length than the one actually shipped in the brief.
+  //
+  // `durationS` stays the outer LEGAL bound (a 40s or a 95s Short is still a
+  // Short). `targetSeconds` is the single length the writer aims at, and the
+  // only one the accent budget can be sized against: density is measured
+  // against the draft's real spoken length, so a target that is a 2.4x-wide
+  // range is not a target at all. 70s sits mid-band and is where the density
+  // target of 0.30 events/s buys a usable 21 events.
+  const durationS: [number, number] = [40, 95];
+  const targetSeconds = 70;
+  const targetWords = Math.round(targetSeconds * WORDS_PER_SECOND);
+  const beatsRange: [number, number] = [8, 12];
+  const accentBudget = computeAccentBudget(targetSeconds, beatsRange);
+
   return {
     version: 1,
     generated: new Date().toISOString(),
@@ -251,6 +374,7 @@ export function assembleBrief(input: BriefInput): WriterBrief {
       accent_kinds: ACCENT_KINDS,
       anchor_steps: seasons,
       density: { floor: DENSITY_FLOOR, ceiling: DENSITY_CEILING, target: 0.30 },
+      accent_budget: accentBudget,
     },
     facts: {
       unit: input.unit,
@@ -274,8 +398,10 @@ export function assembleBrief(input: BriefInput): WriterBrief {
     style: {
       voice: 'present tense, third person, documentary; B2 vocabulary; no hype slang',
       rules: STYLE_RULES,
-      duration_s: [40, 95],
-      beats: [8, 12],
+      duration_s: durationS,
+      target_seconds: targetSeconds,
+      target_words: targetWords,
+      beats: beatsRange,
       ending_variants: ['thesis', 'hard-cut', 'open-question'],
       forbidden: [
         'any number not in facts.allowed_numbers',
@@ -284,6 +410,8 @@ export function assembleBrief(input: BriefInput): WriterBrief {
         'any Anchor.step not in visual.anchor_steps',
         'pixel coordinates of any kind',
         'more than 3 accents in one beat',
+        'a running accent total outside visual.accent_budget',
+        'a total word count more than 15% away from style.target_words',
         'a chart not in visual.alternates',
       ],
     },
