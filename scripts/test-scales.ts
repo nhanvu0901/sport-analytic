@@ -18,6 +18,7 @@ import type { TavilyHit } from '../src/content/tavily';
 import angles from '../content/angles.json';
 import type { LedgerRecord } from '../src/content/types';
 import { cacheKey, synthesize, type WorkerJob } from '../src/tts/chatterbox';
+import { normaliseName, stripSuffix, aggregateBox, resolveName, ambiguous, type BoxRow, type PlayerTotals } from '../src/hoopr';
 
 let n = 0;
 const t = (name: string, fn: () => void) => {
@@ -738,6 +739,134 @@ await at('synthesize calls the worker with exactly the missing chunk', async () 
     assert.equal(job.chunks.length, 1, 'only the missing chunk should be sent to the worker');
     assert.equal(job.chunks[0].key, cacheKey({ text: chunks[1].text, seed: 1001 }, {}));
   });
+});
+
+/* ------------------------------------------------------------------ hoopr.ts */
+
+t('normaliseName collides an accent: "Jan Veselý" and "Jan Vesely"', () => {
+  assert.equal(normaliseName('Jan Veselý'), normaliseName('Jan Vesely'));
+});
+
+t('normaliseName does NOT collide a generation suffix any more — "Kelly Oubre Jr." and "Kelly Oubre" are DIFFERENT keys', () => {
+  // Reversed from the original spec: dropping the suffix on the INDEX side
+  // is exactly the bug that let "Tim Hardaway" resolve to the son's total
+  // and "Gary Payton II" resolve to the father's. The source data already
+  // distinguishes these two people; normaliseName must not erase that.
+  assert.notEqual(normaliseName('Kelly Oubre Jr.'), normaliseName('Kelly Oubre'));
+});
+
+t('normaliseName does NOT collide a generation suffix any more — "Gary Payton II" and "Gary Payton" are DIFFERENT keys', () => {
+  assert.notEqual(normaliseName('Gary Payton II'), normaliseName('Gary Payton'));
+});
+
+t('normaliseName does NOT collide "Jaren Jackson Jr." and "Jaren Jackson Sr." — father and son must stay distinct keys', () => {
+  assert.notEqual(normaliseName('Jaren Jackson Jr.'), normaliseName('Jaren Jackson Sr.'));
+});
+
+t('normaliseName does not collide two genuinely different names', () => {
+  assert.notEqual(normaliseName('LeBron James'), normaliseName('Kevin Durant'));
+  assert.notEqual(normaliseName('Jan Vesely'), normaliseName('Jimmer Fredette'));
+});
+
+t('stripSuffix maps "Kelly Oubre Jr." and "Kelly Oubre" to the SAME stripped key', () => {
+  // This is where suffix-insensitivity now lives: a fallback LOOKUP key,
+  // never the index's own key.
+  assert.equal(stripSuffix(normaliseName('Kelly Oubre Jr.')), stripSuffix(normaliseName('Kelly Oubre')));
+});
+
+t('stripSuffix maps "Gary Payton II" and "Gary Payton" to the same stripped key, and leaves a no-suffix name unchanged', () => {
+  assert.equal(stripSuffix(normaliseName('Gary Payton II')), stripSuffix(normaliseName('Gary Payton')));
+  assert.equal(stripSuffix(normaliseName('Kevin Durant')), normaliseName('Kevin Durant'));
+});
+
+const mkTotals = (id: string, name: string, games: number): PlayerTotals => ({ id, name, points: games * 10, games, seasons: [2013] });
+
+t('resolveName returns an exact key hit directly, without touching the stripped fallback', () => {
+  const index = new Map([[normaliseName('Tim Hardaway'), mkTotals('301', 'Tim Hardaway', 87)],
+                          [normaliseName('Tim Hardaway Jr.'), mkTotals('2528210', 'Tim Hardaway Jr.', 686)]]);
+  assert.equal(resolveName('Tim Hardaway', index)!.id, '301');
+  assert.equal(resolveName('Tim Hardaway Jr.', index)!.id, '2528210');
+});
+
+t('resolveName falls back to the stripped key when exactly one candidate matches (a genuine spelling gap)', () => {
+  const index = new Map([[normaliseName('Kelly Oubre Jr.'), mkTotals('3133603', 'Kelly Oubre Jr.', 574)]]);
+  // Query has no suffix at all, and the index only knows the Jr. spelling —
+  // exactly the "Kelly Oubre Jr." vs "Kelly Oubre" gap this fallback exists for.
+  const r = resolveName('Kelly Oubre', index);
+  assert.equal(r!.id, '3133603');
+});
+
+t('resolveName REFUSES (returns null) and records an ambiguous entry when the stripped key has two candidates — never guesses by games', () => {
+  ambiguous.length = 0;
+  const index = new Map([[normaliseName('Gary Payton'), mkTotals('640', 'Gary Payton', 491)],
+                          [normaliseName('Gary Payton II'), mkTotals('3134903', 'Gary Payton II', 192)]]);
+  // Neither exact spelling in the index — "Gary Payton Sr." strips to "gary
+  // payton", which matches BOTH the father's and the son's stripped keys.
+  // This is the exact failure mode reported live: the old code silently
+  // returned the father's (higher-games) total for a query like this.
+  const ambiguousQuery = 'Gary Payton Sr.';
+  const r = resolveName(ambiguousQuery, index);
+  assert.equal(r, null, 'must refuse rather than pick the one with more games');
+  assert.equal(ambiguous.length, 1);
+  assert.equal(ambiguous[0].query, ambiguousQuery);
+  assert.equal(ambiguous[0].candidates.length, 2);
+  assert.deepEqual(new Set(ambiguous[0].candidates.map((c) => c.id)), new Set(['640', '3134903']));
+});
+
+const boxRow = (over: Partial<BoxRow>): BoxRow => ({
+  athlete_id: 1, athlete_display_name: 'Test Player', points: 10, season: 2013, season_type: 2, ...over,
+});
+
+t('aggregateBox excludes postseason rows (season_type !== 2)', () => {
+  const rows = [boxRow({ points: 10, season_type: 2 }), boxRow({ points: 999, season_type: 3 })];
+  const out = aggregateBox(rows);
+  assert.equal(out.get('1')!.points, 10);
+  assert.equal(out.get('1')!.games, 1);
+});
+
+t('aggregateBox counts a null points row as 0, not a skip', () => {
+  const rows = [boxRow({ points: 10 }), boxRow({ points: null })];
+  const out = aggregateBox(rows);
+  assert.equal(out.get('1')!.points, 10);
+  assert.equal(out.get('1')!.games, 2, 'a null-points row still counts as a game played');
+});
+
+t('aggregateBox games counts ROWS, not distinct seasons (a mid-season trade is two rows in one season)', () => {
+  const rows = [
+    boxRow({ season: 2013, points: 5 }),
+    boxRow({ season: 2013, points: 7 }),   // same season, second team after a trade
+    boxRow({ season: 2014, points: 3 }),
+  ];
+  const out = aggregateBox(rows);
+  assert.equal(out.get('1')!.games, 3, 'three rows, even though only two distinct seasons');
+  assert.equal(out.get('1')!.points, 15);
+});
+
+t('aggregateBox keeps the most frequent display-name spelling', () => {
+  const rows = [
+    boxRow({ athlete_display_name: 'Jimmer Fredette' }),
+    boxRow({ athlete_display_name: 'Jimmer Fredette' }),
+    boxRow({ athlete_display_name: 'Jimmer Fredete' }),   // one-off typo, must lose
+  ];
+  const out = aggregateBox(rows);
+  assert.equal(out.get('1')!.name, 'Jimmer Fredette');
+});
+
+t('aggregateBox returns a sorted, deduplicated seasons list', () => {
+  const rows = [
+    boxRow({ season: 2015 }), boxRow({ season: 2013 }),
+    boxRow({ season: 2014 }), boxRow({ season: 2013 }),   // 2013 twice (trade), must not duplicate
+  ];
+  const out = aggregateBox(rows);
+  assert.deepEqual(out.get('1')!.seasons, [2013, 2014, 2015]);
+});
+
+t('aggregateBox keeps different athlete ids separate', () => {
+  const rows = [boxRow({ athlete_id: 1, points: 10 }), boxRow({ athlete_id: 2, points: 20 })];
+  const out = aggregateBox(rows);
+  assert.equal(out.size, 2);
+  assert.equal(out.get('1')!.points, 10);
+  assert.equal(out.get('2')!.points, 20);
 });
 
 console.log(`\n${n} assertions passed.`);

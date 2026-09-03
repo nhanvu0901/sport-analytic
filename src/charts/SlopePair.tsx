@@ -8,6 +8,7 @@ import { AccentLayer, Camera, PortraitLabel, Scroll, scrollOffsetAt, useBeat, us
 export type RedraftRow = {
   id: string; name: string; last: string; actualPick: number;
   headshot: string; value: number | null; resolvedId: string | null; seasons: number;
+  source: 'espn' | 'hoopr' | 'unresolved';
 };
 
 const COL_W = 300;
@@ -169,6 +170,12 @@ export const SlopePair: React.FC<{
             {r.value !== null && (
               <span style={{ ...type.rowValue, color: T.ink2, fontSize: Math.min(20, rowH * 0.4), marginLeft: 'auto' }}>
                 {fmt.int(r.value)}
+                {/* A number from a different source with a different cutoff
+                    (hoopR stops at 2023) must be visibly marked — never let
+                    a mixed-source total pass as one uniform figure. */}
+                {r.source === 'hoopr' && (
+                  <span style={{ color: TH.ink3, fontFamily: 'ui-monospace, monospace', marginLeft: 2 }}>†</span>
+                )}
               </span>
             )}
           </div>
@@ -245,6 +252,8 @@ export const SlopePair: React.FC<{
     </div>
   );
 
+  const usesHoopr = data.rows.some((r) => r.source === 'hoopr');
+
   return (
     <>
       <Camera stops={zoomStops} glideMs={620}>
@@ -255,6 +264,14 @@ export const SlopePair: React.FC<{
         </div>
       </Camera>
       <AccentLayer accents={active?.accents} progress={progress} resolve={resolve} />
+      {/* Only shown when a row actually carries a hoopR-sourced number — an
+          unmarked mixed-source total is the kind of quiet error that ends up
+          in a video, so the footnote earns its place only when it applies. */}
+      {usesHoopr && (
+        <div style={{ position: 'absolute', left: PLOT.x, top: PLOT.y + PLOT.h + 16, ...type.axisTick, color: TH.ink3 }}>
+          † career points through 2023 (hoopR)
+        </div>
+      )}
     </>
   );
 };
