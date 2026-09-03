@@ -50,7 +50,10 @@ a full disk stops macOS growing its swap file, and the symptom looks exactly
 like the model degrading.
 
 `C01F-cumulative-lines-source-script` narrates the source video's own words, so
-the AI voice can be judged against the human host on identical material.
+the AI voice can be judged against the human host on identical material — until
+a written draft exists for brief `C01F`, at which point that composition follows
+the draft instead (`npx tsx scripts/tts.ts C01F` with no draft path puts the
+source script back).
 `scripts/ab.ts` builds `out/ab/voice-ab.wav` — original, a beep, then ours.
 
 Each sentence gets its own seed (`1000 + i` by default) and its WAV is cached
@@ -63,15 +66,47 @@ model or venv changes underneath it.
 
 ### Writing a script with Gemini
 
-No Gemini API key anywhere — the loop is paste-based, on purpose:
+```bash
+npx tsx scripts/brief.ts C01F      # out/brief-C01F.json + .md — the facts and the allowed numbers
+npx tsx scripts/write.ts C01F      # Gemini writes the script; ~100s
+npx tsx scripts/tts.ts C01F out/draft-C01F.json
+npx tsx scripts/render-videos.ts C01F-cumulative-lines-source-script
+```
 
-1. `npx tsx scripts/brief.ts <id>` — writes `out/brief-<id>.json` and `out/brief-<id>.md`.
-2. Paste `prompts/WRITER_SKILL.md` into Gemini once, at the top of a chat (it carries the seven measured style rules and the accent contract; it does not change per video).
-3. Paste `out/brief-<id>.md` — the facts, markers, and allowed numbers for this one video.
-4. Save Gemini's reply to a file (a leading/trailing fence, stray prose, or a trailing comma are all fine — the parser tolerates them).
-5. `npm run draft <id> <path-to-the-reply>` — or `npm run draft <id> -` to pipe it in on stdin.
+`scripts/write.ts` is the writer. It calls Gemini through the **Antigravity
+CLI** (`agy`), not the `gemini` CLI: the two share `~/.gemini/` but not
+credentials, and only `agy` is authenticated here (by
+`~/.gemini/antigravity-cli/antigravity-oauth-token` — the `gemini` CLI has no
+`settings.json` and exits in 3s with `{"code":41}`). The model is
+`gemini-3.8-flash-high`, in one constant at the top of the file: on this prompt
+it answers in ~100s, where `gemini-3.1-pro-high` took 230s and 303s and once
+died on its own poll timeout. No JSON schema is passed — a schema makes the
+model reply with a malformed *function call* instead of a script, and
+`parseDraftText` already tolerates fences and prose. The prompt opens with an
+explicit English override, because the machine-wide `~/.gemini/config/GEMINI.md`
+says to answer in Vietnamese and wins over this repo's `GEMINI.md`.
 
-A failed verify writes nothing: it prints every broken rule as `beat <n> · <rule> · <detail>` and exits 1, so paste the fixed reply back into the same command. A verified draft becomes `out/draft-<id>.json`, which `npx tsx scripts/tts.ts <id> out/draft-<id>.json` narrates exactly like a hardcoded `SCRIPTS[id]` script.
+It fails in exactly three ways, with three exit codes: **2 auth** (no token, or
+`agy` not on `PATH`), **3 refused** (`agy` errored, or replied with no JSON in
+it — its own error text is printed), **4 rules** (a draft parsed but
+`verifyDraft` found violations, listed as `beat <n> · <rule> · <detail>`).
+Nothing is written to `out/` unless every rule passes.
+
+The reply is cached under a hash of the brief's content, the skill text, the
+model name and the language override, so re-running on an unchanged brief
+replays the approved script instead of re-rolling it — an LLM CLI has no seed.
+`--force` re-rolls anyway; `DRAFT_CACHE_VERSION` invalidates every cached draft
+at once.
+
+A verified draft lands in `out/draft-<id>.json`, which `scripts/tts.ts`
+narrates, and is mirrored to `src/data/draft-<id>.json`, which the renderer
+reads — see `src/drafts.ts` for why the picture needs its own copy, and what
+happens when the audio and the draft disagree.
+
+The paste loop still works when the CLI is not available: paste
+`prompts/WRITER_SKILL.md` then `out/brief-<id>.md` into any Gemini chat, save
+the reply, and run `npm run draft <id> <path>` (or `- ` for stdin), which runs
+the same `verifyDraft` and writes the same file.
 
 ## What is here
 

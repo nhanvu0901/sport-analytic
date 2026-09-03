@@ -3,9 +3,9 @@ import { Audio, Composition, staticFile } from 'remotion';
 import './fonts';
 import { V } from './theme';
 import { fmt } from './scale';
-import { buildTimeline, framesFor, type ScriptLine } from './script';
+import { buildTimeline, framesFor } from './script';
 import { SCRIPTS } from './scripts';
-import { loadTimeline } from './timeline';
+import { stageFor } from './drafts';
 import { Frame } from './chrome/Frame';
 import { CumulativeLines } from './charts/CumulativeLines';
 import { RankedBar } from './charts/RankedBar';
@@ -34,16 +34,24 @@ import waffle from './data/waffle.json';
 const byAbbr = new Map((teams as any[]).map((t) => [t.abbr, t]));
 const NBA_LOGO = 'https://a.espncdn.com/i/teamlogos/leagues/500/nba.png';
 
-/* ------------------------------------------------------------------ 01 lines */
-const cumMeasured = loadTimeline('C01');
-const cum = cumMeasured ?? buildTimeline(SCRIPTS.C01);
-const cumAudio = cumMeasured?.audio;
+/* ------------------------------------------------------------------ 01 lines
+   `stageFor` is the whole wiring of a WRITTEN script into the picture: it
+   prefers src/data/draft-<id>.json (mirrored there by scripts/write.ts) for
+   the title, the beat order and the accents, takes the timings from the
+   measured audio when there is any, and falls back to the hardcoded
+   SCRIPTS[id] when there is no draft — which is what every other composition
+   below still runs on. See src/drafts.ts for the precedence and why it is in
+   that order. The line it logs says which case fired, and Remotion forwards
+   browser console output, so a render states what actually drove the picture
+   instead of leaving an ignored draft looking exactly like a used one. */
+const cum = stageFor('C01', SCRIPTS.C01, cumulative.title);
 
-// The same chart driven by the SOURCE VIDEO's own narration, so the AI voice can
-// be judged against the human host on identical words.
-const fullMeasured = loadTimeline('C01F');
-const full = fullMeasured ?? buildTimeline(SCRIPTS.C01F);
-const fullAudio = fullMeasured?.audio;
+// C01F is the same chart on the SOURCE VIDEO's own narration when no draft
+// exists — that is the A/B against the human host (scripts/finish-ab.sh) — and
+// on the generated draft for brief C01F once one has been written and narrated.
+const full = stageFor('C01F', SCRIPTS.C01F, cumulative.title);
+
+console.log(`C01: ${cum.source} · C01F: ${full.source}`);
 /* ---------------------------------------------------------- generic scripts */
 const listScript = (rows: { id: string; name: string }[], say: (r: any) => string, pick: number[]) =>
   pick.filter((i) => rows[i]).map((i) => ({ entityId: rows[i].id, text: say(rows[i]) }));
@@ -84,8 +92,8 @@ export const RemotionRoot: React.FC = () => (
       id="C01-cumulative-lines" width={V.W} height={V.H} fps={V.FPS}
       durationInFrames={framesFor(cum.durationMs, V.FPS)}
       component={() => (
-        <Frame title={cumulative.title} sub={cumulative.sub} logo={NBA_LOGO}>
-          {cumAudio && <Audio src={staticFile(cumAudio)} />}
+        <Frame title={cum.title} sub={cumulative.sub} logo={NBA_LOGO}>
+          {cum.audio && <Audio src={staticFile(cum.audio)} />}
           <CumulativeLines data={cumulative as any} beats={cum.beats} />
         </Frame>
       )}
@@ -94,8 +102,8 @@ export const RemotionRoot: React.FC = () => (
       id="C01F-cumulative-lines-source-script" width={V.W} height={V.H} fps={V.FPS}
       durationInFrames={framesFor(full.durationMs, V.FPS)}
       component={() => (
-        <Frame title={cumulative.title} sub={cumulative.sub} logo={NBA_LOGO}>
-          {fullAudio && <Audio src={staticFile(fullAudio)} />}
+        <Frame title={full.title} sub={cumulative.sub} logo={NBA_LOGO}>
+          {full.audio && <Audio src={staticFile(full.audio)} />}
           <CumulativeLines data={cumulative as any} beats={full.beats} />
         </Frame>
       )}

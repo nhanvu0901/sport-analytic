@@ -8,8 +8,10 @@ import { scrollOffsetAt, type ScrollStop } from '../src/motion';
 import { detectMarkers, allowedNumbers, STYLE_RULES, assembleBrief, normaliseStep, computeAccentBudget, type BriefEntity, type BriefInput, type Marker, type WriterBrief } from '../src/brief';
 import { deriveHookSeed, seasonUnion, seriesVerdict } from '../src/candidateBrief';
 import { verifyDraft, parseDraftText, WORDS_PER_SECOND, type Draft } from '../src/verify';
+
 import { renderBriefMd } from '../src/briefMd';
 import { draftToScriptLines } from '../src/scripts';
+import { narratesDraft, separatorExample } from '../src/drafts';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -22,7 +24,6 @@ import angles from '../content/angles.json';
 import type { LedgerRecord } from '../src/content/types';
 import { cacheKey, synthesize, type WorkerJob } from '../src/tts/chatterbox';
 import { normaliseName, stripSuffix, aggregateBox, resolveName, ambiguous, type BoxRow, type PlayerTotals } from '../src/hoopr';
-import { buildDraftSchema } from '../src/draftSchema';
 
 let n = 0;
 const t = (name: string, fn: () => void) => {
@@ -1255,43 +1256,56 @@ t('the same 8 beats and 16 accents at the 203-word target trip neither length no
   assert.deepEqual(v.filter((x) => x.rule === 'length' || x.rule === 'density'), []);
 });
 
-/* ---------------------------------------------------------- draftSchema.ts
+/* ------------------------------------------------------------- drafts.ts
  *
- * OpenAI's strict structured-output mode (`codex exec --output-schema`)
- * fails in ~4s with `"code":"invalid_json_schema"` the moment any object in
- * the schema lists a key in `properties` that is missing from that same
- * object's `required` array — measured directly against this project's own
- * brief. Walk the whole schema recursively and enforce that invariant so a
- * future edit to draftSchema.ts cannot silently reintroduce it. */
+ * A draft's accents may only be laid over a measured timeline's spans when
+ * the audio actually narrates that draft. Beat COUNT cannot decide it:
+ * out/draft-C01F.json and the source-video transcript in SCRIPTS.C01F are
+ * both ten beats long, so counting would put every arrow on the wrong
+ * sentence at exactly the moment it looked like it had worked. */
 
-function assertAllPropertiesRequired(node: any, path: string) {
-  if (!node || typeof node !== 'object') return;
-  if (node.properties && typeof node.properties === 'object') {
-    const propKeys = Object.keys(node.properties).sort();
-    const required = (node.required ?? []).slice().sort();
-    assert.deepEqual(required, propKeys, `${path}: every key in properties must appear in required`);
-    for (const [k, v] of Object.entries(node.properties)) assertAllPropertiesRequired(v, `${path}.${k}`);
-  }
-  if (node.items) assertAllPropertiesRequired(node.items, `${path}[]`);
-}
+const chunk = (text: string, beatIndex: number) => ({ text, beatIndex });
+const twoBeatDraft: Draft = {
+  title: 't',
+  beats: [
+    { text: 'Barrett leads at 8,391, but Zion finishes behind.', entityId: 'a' },
+    { text: 'Morant opens like the answer, then plateaus.', entityId: 'b' },
+  ],
+};
 
-t('buildDraftSchema: every object lists all of its properties as required (OpenAI strict mode)', () => {
-  assertAllPropertiesRequired(buildDraftSchema(), 'schema');
+t('narratesDraft: true when every beat\'s sentences re-join to that beat\'s text', () => {
+  // Two sentences in beat 0, as toSentences would split them.
+  const draft: Draft = {
+    title: 't',
+    beats: [
+      { text: 'Barrett leads at 8,391. Zion finishes behind.', entityId: 'a' },
+      { text: 'Morant opens like the answer, then plateaus.', entityId: 'b' },
+    ],
+  };
+  assert.equal(narratesDraft({ chunks: [
+    chunk('Barrett leads at 8,391.', 0),
+    chunk('Zion finishes behind.', 0),
+    chunk('Morant opens like the answer, then plateaus.', 1),
+  ] }, draft), true);
 });
 
-t('buildDraftSchema: matches the shape of verify.ts\'s Draft type', () => {
-  const schema = buildDraftSchema();
-  assert.deepEqual(schema.required, ['title', 'beats']);
-  const beat = schema.properties.beats.items;
-  assert.deepEqual([...beat.required].sort(), ['accents', 'ending', 'entityId', 'text']);
-  const accent = beat.properties.accents.items;
-  assert.deepEqual([...accent.required].sort(), ['at', 'kind', 't', 'text']);
-  assert.deepEqual(accent.properties.kind.enum, ACCENT_KINDS);
-  // Optional TS fields must be nullable, never just absent from `required`.
-  assert.ok((beat.properties.accents.type as string[]).includes('null'));
-  assert.ok((beat.properties.ending.type as string[]).includes('null'));
-  assert.ok((accent.properties.at.type as string[]).includes('null'));
-  assert.ok((accent.properties.text.type as string[]).includes('null'));
+t('narratesDraft: false when the beat count matches but the words do not', () => {
+  assert.equal(narratesDraft({ chunks: [
+    chunk('Zion Williamson missed his third season entirely.', 0),
+    chunk('The second pick started far more steadily.', 1),
+  ] }, twoBeatDraft), false, 'same shape, different script — the accents must not be overlaid');
+});
+
+t('narratesDraft: false for a timeline written before chunks were persisted', () => {
+  assert.equal(narratesDraft({}, twoBeatDraft), false);
+  assert.equal(narratesDraft({ chunks: [] }, twoBeatDraft), false);
+});
+
+t('narratesDraft: whitespace differences do not count as a different script', () => {
+  assert.equal(narratesDraft({ chunks: [
+    chunk('  Barrett leads at 8,391,\n  but Zion finishes behind. ', 0),
+    chunk('Morant opens like the answer, then plateaus.', 1),
+  ] }, twoBeatDraft), true);
 });
 
 /* ---------------------------------------------- candidateBrief.ts: pure parts */
@@ -1402,4 +1416,16 @@ t('deriveHookSeed falls through to why_fans_argue when the only undrafted-shaped
   );
 });
 
+/* ------------------------------------------- write.ts: separatorExample */
+
+t('separatorExample takes the brief\'s own largest separated number, never a foreign one', () => {
+  // The old code hardcoded 8,391 — a C01F figure — into the prompt of EVERY
+  // brief, which is the direction a fabricated number travels.
+  assert.equal(separatorExample([1, 2, 8391, 12095, 47]), '12,095');
+  assert.equal(separatorExample(['8,391', '43,440']), '43,440');
+  assert.equal(separatorExample([1, 2, 7, 226]), '8,391');   // nothing >= 1000: documented fallback
+  assert.equal(separatorExample([]), '8,391');
+});
+
 console.log(`\n${n} assertions passed.`);
+

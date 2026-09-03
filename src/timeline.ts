@@ -11,12 +11,28 @@ import c01f from './data/timeline-C01F.json';
  * always present (empty until the first `npx tsx scripts/tts.ts` run) because a
  * bundler cannot statically import a path that may not exist.
  */
-export type Timeline = { beats: Beat[]; captions: Caption[]; durationMs: number; audio?: string };
+export type Timeline = {
+  beats: Beat[];
+  captions: Caption[];
+  durationMs: number;
+  audio?: string;
+  /**
+   * One entry per synthesised sentence, in order, tagged with the beat it
+   * belongs to — the timeline's own record of what the WAV actually says.
+   * `src/drafts.ts` reads it to decide whether a draft's accents may be laid
+   * over these measured spans, or whether the audio narrates a different
+   * script entirely. Absent in a timeline written before it was persisted.
+   */
+  chunks?: { text: string; beatIndex: number }[];
+};
 
 const FILES: Record<string, any> = { C01: c01, C01F: c01f };
 
 export function loadTimeline(id: string): Timeline | null {
   const t = FILES[id];
   if (!t || !Array.isArray(t.beats) || t.beats.length === 0) return null;
-  return { beats: t.beats, captions: t.captions, durationMs: t.durationMs, audio: t.audio };
+  return {
+    beats: t.beats, captions: t.captions, durationMs: t.durationMs,
+    audio: t.audio, chunks: t.chunks,
+  };
 }
