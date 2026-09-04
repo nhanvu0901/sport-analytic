@@ -157,6 +157,9 @@ Five kinds. Nothing else is valid.
 | `refline` | dashed line across the chart at that point's level | `at`, `text` |
 | `arrow` | dashed arrow points in at a point | `at`, `text` |
 
+On a record chase, `refline` and `arrow` can be anchored at the record line
+instead of at a point — see **Pointing at the record line** below.
+
 `at` is an **anchor in data space**: `{ "entityId": "...", "step": "..." }`.
 
 - `entityId` must be one of the brief's `facts.entities[].id`.
@@ -164,6 +167,31 @@ Five kinds. Nothing else is valid.
   that entity's latest point.
 - **Never write pixel coordinates.** You cannot know them and they would be
   wrong anyway; the chart resolves anchors itself.
+
+### Pointing at the record line
+
+Some briefs are a **record chase**: one player's career total climbing towards
+a single all-time mark, drawn as one horizontal line across the chart. Those
+briefs carry a `facts.record` block — the holder, the number, the seasons it
+took, and how far short each charted player still is.
+
+The record is **not** an entity, so it has no `entityId` of its own and no
+`step`. To point at it, add `record` to the anchor:
+
+```json
+{ "t": 0.55, "kind": "refline", "at": { "entityId": "1966", "record": true }, "text": "23,924" }
+```
+
+- `entityId` is still required, and names the player whose chart it is.
+- `record: true` means "the record line", whatever value it sits at.
+- Only valid when the brief actually has `facts.record`. On any other brief it
+  is rejected with `accent-anchor`.
+- `refline` and `arrow` are the two kinds that read well on it. A `callout` on
+  the line duplicates the label the chart already draws there.
+
+The record's own value **and** the gap to it are both in `allowed_numbers`, so
+you may say them. On a chase the gap is usually the strongest number in the
+script: it is the answer to the question the title asked.
 
 `t` is a fraction of that beat, `0` to `1` — when the accent fires inside the
 sentence. Put a `callout` carrying a number at the moment the voice says it.
@@ -215,6 +243,7 @@ failure sends the whole script back with the violated rule named.
 - [ ] Every number appears in `allowed_numbers`.
 - [ ] Every `entityId` appears in `facts.entities`.
 - [ ] Every `at.step` appears in `visual.anchor_steps`.
+- [ ] Any `at.record` anchor is on a brief that has `facts.record`.
 - [ ] Every accent kind is one of the five.
 - [ ] Every beat has 1 to 3 accents, `t` values ≥ 0.12 apart — one on every
       beat, extras only where they earn it.

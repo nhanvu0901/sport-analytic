@@ -44,6 +44,33 @@ export function fitRows(count: number, height: number, ideal = 44, min = 34) {
   return { mode: 'scroll' as const, rowH, visible: Math.floor(height / rowH) };
 }
 
+/**
+ * Which x-axis ticks may keep a text label, given how much room each one has.
+ *
+ * Same class of problem as `fitRows`: the 9:16 frame is the constraint, not
+ * the data. A 7-season chart has 102px between ticks and every label fits; a
+ * 23-season career chase has 31px, and drawing all 24 four-digit years puts
+ * text on top of text. So labels are thinned to a stride while every tick
+ * keeps its POSITION — the line is still drawn against all 24 steps, only the
+ * type is sampled.
+ *
+ * The last tick is kept unconditionally (it is where the career total is, and
+ * an axis whose right end is unlabelled reads as truncated) and the stride
+ * label before it is dropped when it would crowd it — which is why this
+ * returns a mask rather than a stride number.
+ *
+ * Pure, so the arithmetic is testable without rendering anything.
+ */
+export function thinLabels(count: number, width: number, labelWidth = 92): boolean[] {
+  if (count <= 1) return new Array(Math.max(0, count)).fill(true);
+  const spacing = width / (count - 1);
+  const stride = Math.max(1, Math.ceil(labelWidth / spacing));
+  if (stride === 1) return new Array(count).fill(true);
+  const last = count - 1;
+  return Array.from({ length: count }, (_, i) =>
+    i === last || (i % stride === 0 && last - i >= stride));
+}
+
 export const fmt = {
   int: (v: number) => Math.round(v).toLocaleString('en-US'),
   money: (v: number) => '$' + Math.round(v).toLocaleString('en-US'),

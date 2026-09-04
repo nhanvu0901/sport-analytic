@@ -6,6 +6,7 @@ import { loadTimeline, type Timeline } from './timeline';
 
 import draftC01 from './data/draft-C01.json';
 import draftC01F from './data/draft-C01F.json';
+import draft371e3032 from './data/draft-371e3032.json';
 
 /**
  * A generated script reaching the PICTURE, not just the audio.
@@ -27,7 +28,7 @@ import draftC01F from './data/draft-C01F.json';
  * beats keep their transforms a pure function of time.
  */
 
-const FILES: Record<string, unknown> = { C01: draftC01, C01F: draftC01F };
+const FILES: Record<string, unknown> = { C01: draftC01, C01F: draftC01F, '371e3032': draft371e3032 };
 
 /** The accepted draft for a brief id, or null when none has been written. */
 export function loadDraft(id: string): Draft | null {

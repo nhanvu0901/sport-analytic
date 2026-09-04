@@ -4,6 +4,7 @@ import type { Beat } from './motion';
 export type Caption = { text: string; startMs: number; endMs: number };
 import c01 from './data/timeline-C01.json';
 import c01f from './data/timeline-C01F.json';
+import s371e3032 from './data/timeline-371e3032.json';
 
 /**
  * A timeline produced by scripts/tts.ts from real audio: beat boundaries are
@@ -26,7 +27,7 @@ export type Timeline = {
   chunks?: { text: string; beatIndex: number }[];
 };
 
-const FILES: Record<string, any> = { C01: c01, C01F: c01f };
+const FILES: Record<string, any> = { C01: c01, C01F: c01f, '371e3032': s371e3032 };
 
 export function loadTimeline(id: string): Timeline | null {
   const t = FILES[id];

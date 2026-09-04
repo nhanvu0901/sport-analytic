@@ -1,11 +1,12 @@
 /** Plain assertions, no framework. `npm test`. */
 import assert from 'node:assert/strict';
 import { seasonRows, cumulate } from '../src/espn';
-import { scaleLinear, niceTicks, fitRows, binGrid, countRadius, ensureContrast, contrastRatio, pathAt, easeOut, rankPair, gridFit, waffleLayout, type Pt } from '../src/scale';
+import { scaleLinear, niceTicks, fitRows, binGrid, countRadius, ensureContrast, contrastRatio, pathAt, easeOut, rankPair, gridFit, waffleLayout, thinLabels, type Pt } from '../src/scale';
 import teams from '../src/data/teams.json';
 import { eventDensity, DENSITY_FLOOR, DENSITY_CEILING, accentProgress, ACCENT_KINDS } from '../src/accent';
 import { scrollOffsetAt, type ScrollStop } from '../src/motion';
-import { detectMarkers, allowedNumbers, STYLE_RULES, assembleBrief, normaliseStep, computeAccentBudget, type BriefEntity, type BriefInput, type Marker, type WriterBrief } from '../src/brief';
+import { detectMarkers, allowedNumbers, STYLE_RULES, assembleBrief, normaliseStep, computeAccentBudget, type BriefEntity, type BriefInput, type BriefRecord, type Marker, type WriterBrief } from '../src/brief';
+import { CAREER_RECORDS, namesRecord, recordChaseFor, recordFor } from '../src/records';
 import { deriveHookSeed, seasonUnion, seriesVerdict } from '../src/candidateBrief';
 import { verifyDraft, parseDraftText, WORDS_PER_SECOND, type Draft } from '../src/verify';
 
@@ -143,6 +144,21 @@ t('fitRows: a shrunk row height that still fits must report static, not scroll',
 t('fitRows: a genuinely long list still scrolls after the re-check', () => {
   const f = fitRows(450, 1120);
   assert.equal(f.mode, 'scroll');
+});
+
+t('thinLabels keeps every label when they fit, and samples them when they do not', () => {
+  // C01: 8 season ticks across the court theme's 716px plot — 102px apart, all fit.
+  assert.deepEqual(thinLabels(8, 716), new Array(8).fill(true));
+  // A 23-season career chase: 24 ticks, 31px apart. Every third, and the last.
+  const mask = thinLabels(24, 716);
+  assert.equal(mask.length, 24);
+  assert.equal(mask[0], true);
+  assert.equal(mask[23], true, 'the right end carries the career total and must stay labelled');
+  assert.equal(mask[1], false);
+  assert.equal(mask[21], false, 'the stride label two ticks from the end would crowd it');
+  assert.ok(mask.filter(Boolean).length <= 8, `${mask.filter(Boolean).length} labels is still too many`);
+  assert.deepEqual(thinLabels(1, 716), [true]);
+  assert.deepEqual(thinLabels(0, 716), []);
 });
 
 /* -------------------------------------------------------------------- binGrid */
@@ -1426,6 +1442,185 @@ t('separatorExample takes the brief\'s own largest separated number, never a for
   assert.equal(separatorExample([1, 2, 7, 226]), '8,391');   // nothing >= 1000: documented fallback
   assert.equal(separatorExample([]), '8,391');
 });
+
+/* ------------------------------------------------------- records.ts + chase
+ *
+ * A record chase is one cumulative series plus ONE absolute number, and the
+ * whole point is that the record holder's season-by-season data is never
+ * needed: ESPN returns 5 of Wilt Chamberlain's 14 seasons and zero rebounds,
+ * so he cannot be a second series — and a chase never asked him to be one.
+ * Everything below is pure; no network. */
+
+t('every career record carries a value, a holder id, and two-source provenance', () => {
+  for (const [key, r] of Object.entries(CAREER_RECORDS)) {
+    assert.equal(r.measure, key, `${key} keyed by its own measure`);
+    assert.ok(r.value > 0 && Number.isInteger(r.value), `${key} value`);
+    assert.ok(r.seasons > 0, `${key} seasons`);
+    assert.ok(/^\d+$/.test(r.holderEspnId), `${key} holder needs an ESPN id, got "${r.holderEspnId}"`);
+    // Provenance is not decoration: this is the one number on the chart that
+    // does not come from the data source, so it must name where it came from
+    // and it must name more than one place.
+    assert.ok(r.source.includes('espn.com') && r.source.includes('wikipedia.org'),
+      `${key} must cite both sources it was corroborated against: ${r.source}`);
+    assert.ok(/^\d{4}-\d{2}-\d{2}$/.test(r.asOf), `${key} asOf`);
+  }
+});
+
+t('recordFor: the rebounds record is Wilt\'s 23,924 in 14 seasons, and an unknown measure has none', () => {
+  const reb = recordFor('REB');
+  assert.equal(reb!.value, 23924);
+  assert.equal(reb!.holder, 'Wilt Chamberlain');
+  assert.equal(reb!.seasons, 14);
+  assert.equal(reb!.holderEspnId, '4142');
+  // ESPN's own JSON all-time leaders endpoint answers 16,212 (Moses Malone)
+  // here, because its rebound totals start at 1973-74. That is the same hole
+  // that returns 0 rebounds for Wilt, and is exactly why this is a table.
+  assert.notEqual(reb!.value, 16212);
+  assert.equal(recordFor('GP'), null);
+  assert.equal(recordFor(null), null);
+});
+
+t('namesRecord fires on record / all-time wording, not on a plain comparison', () => {
+  assert.ok(namesRecord("Can LeBron James realistically catch Wilt Chamberlain's career rebounds record?"));
+  assert.ok(namesRecord('the all-time rebounding list'));
+  assert.ok(namesRecord('all time leaders'));
+  assert.ok(!namesRecord('Which 2019 draft pick has grabbed the most rebounds?'));
+});
+
+t('recordChaseFor needs a held record, record wording, AND the holder named', () => {
+  const session = "Can LeBron James realistically catch Wilt Chamberlain's career rebounds record? "
+    + "one-number comparison: LeBron's career rebounds vs Wilt Chamberlain's 23,924";
+  assert.equal(recordChaseFor(session, ['LeBron James', 'Wilt Chamberlain'], 'REB')!.value, 23924);
+
+  // Holder named only in the entities list, not the question — still a chase.
+  assert.equal(recordChaseFor('Can he catch the all-time record?', ['Wilt Chamberlain'], 'REB')!.value, 23924);
+
+  // A real chase of a DIFFERENT benchmark. Wilt is not named, and a 23,924
+  // ceiling would dwarf both of its series for nothing.
+  assert.equal(
+    recordChaseFor('Which active player is the most realistic next rebound milestone chaser after Dwight Howard, on the all-time list?',
+      ['Nikola Jokic', 'Andre Drummond', 'Dwight Howard'], 'REB'),
+    null
+  );
+  // A draft-class comparison is not a record chase even though the holder of
+  // the all-time mark exists.
+  assert.equal(recordChaseFor('Which 2019 draft pick has grabbed the most rebounds?', ['RJ Barrett'], 'REB'), null);
+  // No record held for this measure.
+  assert.equal(recordChaseFor("Can he catch the all-time games played record of Robert Parish?", ['Robert Parish'], 'GP'), null);
+  // A first name alone is not identification — "John" cannot separate John
+  // Stockton from John Wall, so it must not fire.
+  assert.equal(recordChaseFor('Can John break the all-time assists record?', ['John Wall'], 'AST'), null);
+});
+
+/* ------------------------------------------------- brief.ts: the record path */
+
+const chaseRecord: BriefRecord = {
+  measure: 'REB', unit: 'rebounds', holder: 'Wilt Chamberlain',
+  value: 23924, seasons: 14, label: 'Wilt Chamberlain · 23,924',
+  gap: [{ entityId: 'lebron', short: 11829 }],
+  source: 'test', as_of: '2026-09-04',
+};
+
+t('allowedNumbers adds the record, the gap and the holder\'s season count — the three a chase must say', () => {
+  const seasons = ['2003-04', '2025-26'];
+  const lebron = entity({ id: 'lebron', total: 12095, rank: 1, seasons_played: 23,
+    series: [{ step: '2003-04', value: 432 }, { step: '2025-26', value: 12095 }] });
+  const plain = new Set(allowedNumbers([lebron], seasons));
+  assert.ok(!plain.has(23924), 'no record supplied: the record must not appear');
+  assert.ok(!plain.has(11829), 'no record supplied: the gap must not appear');
+
+  const withRecord = new Set(allowedNumbers([lebron], seasons, chaseRecord));
+  assert.ok(withRecord.has(23924), 'the record itself');
+  assert.ok(withRecord.has(11829), 'the gap — the answer to the question the title asked');
+  assert.ok(withRecord.has(14), "the holder's season count, and 14 is not in 1..12");
+  assert.ok(withRecord.has(12095) && withRecord.has(23), 'the chaser\'s own numbers survive');
+});
+
+t('detectMarkers: a record produces a record-gap marker, and rank 1 of 1 is not a leader', () => {
+  const lebron = entity({ id: 'lebron', last: 'James', total: 12095, rank: 1, seasons_played: 23 });
+  const alone = detectMarkers([lebron], ['2025-26'], chaseRecord);
+  const gap = alone.find((m) => m.kind === 'record-gap');
+  assert.ok(gap, 'expected a record-gap marker');
+  assert.equal(gap!.value, 11829);
+  assert.ok(gap!.detail.includes('11829') && gap!.detail.includes('23924') && gap!.detail.includes('14'),
+    `the marker must carry both numbers and the holder's pace: ${gap!.detail}`);
+  // "most in the class: 12095" about the only entity on the chart is a claim
+  // the writer can only turn into a falsehood — there is no class.
+  assert.ok(!alone.some((m) => m.kind === 'leader'), 'rank 1 of 1 is not a fact about anybody');
+
+  // Two or more entities: the ordering is real again and `leader` fires.
+  const second = entity({ id: 'other', total: 8000, rank: 2, seasons_played: 12 });
+  const pair = detectMarkers([lebron, second], ['2025-26']);
+  assert.ok(pair.some((m) => m.entityId === 'lebron' && m.kind === 'leader'));
+});
+
+t('assembleBrief with a record routes to cumulative-record-chase and exposes the line', () => {
+  const input: BriefInput = {
+    topic: { id: 'chase', question: "Can LeBron catch Wilt's rebounds record?", angle: 'chase',
+      lane: 'evergreen', hook_seed: 'The gap is not closing.' },
+    unit: 'rebounds',
+    seasons: ['2003-04', '2025-26'],
+    entities: [entity({ id: 'lebron', name: 'LeBron James', first: 'LeBron', last: 'James',
+      total: 12095, seasons_played: 23,
+      series: [{ step: '2003-04', value: 432 }, { step: '2025-26', value: 12095 }] })],
+    cumulative: true,
+    record: recordFor('REB')!,
+  };
+  const b = assembleBrief(input);
+  assert.equal(b.visual.chart, 'cumulative-record-chase');
+  assert.ok(b.visual.alternates.includes('cumulative-multiline'),
+    'the plain race must stay a legal alternate, or style.forbidden bans the fallback');
+  assert.equal(b.facts.record!.value, 23924);
+  assert.equal(b.facts.record!.label, 'Wilt Chamberlain · 23,924');
+  assert.deepEqual(b.facts.record!.gap, [{ entityId: 'lebron', short: 11829 }]);
+  assert.ok(b.facts.allowed_numbers.includes(23924) && b.facts.allowed_numbers.includes(11829));
+
+  // The same input without the record is the ordinary race, and carries no
+  // record anywhere — the two paths must not leak into each other.
+  const plain = assembleBrief({ ...input, record: undefined });
+  assert.equal(plain.visual.chart, 'cumulative-multiline');
+  assert.equal(plain.facts.record, undefined);
+  assert.ok(!plain.facts.allowed_numbers.includes(23924));
+});
+
+t('renderBriefMd states the record, the gap, and how to anchor an accent at it', () => {
+  const b = assembleBrief({
+    topic: { id: 'chase', question: "Can LeBron catch Wilt's rebounds record?", angle: 'chase',
+      lane: 'evergreen', hook_seed: 'The gap is not closing.' },
+    unit: 'rebounds', seasons: ['2003-04', '2025-26'],
+    entities: [entity({ id: 'lebron', name: 'LeBron James', first: 'LeBron', last: 'James',
+      total: 12095, seasons_played: 23,
+      series: [{ step: '2003-04', value: 432 }, { step: '2025-26', value: 12095 }] })],
+    cumulative: true, record: recordFor('REB')!,
+  });
+  const out = renderBriefMd(b);
+  assert.ok(out.includes('## The record being chased'));
+  assert.ok(out.includes('23,924'), 'the record, formatted');
+  assert.ok(out.includes('11,829'), 'the gap, formatted');
+  assert.ok(out.includes('"record": true'), 'the writer must be shown the anchor form');
+});
+
+/* --------------------------------------------- verify.ts: the record anchor */
+
+const recordBrief = {
+  ...miniBrief,
+  facts: { ...miniBrief.facts, record: chaseRecord },
+} as unknown as WriterBrief;
+
+t('verifyDraft accepts at.record on a chase brief and rejects it on one with no record', () => {
+  const beat = {
+    text: 'Alpha One sits at 100, but the record is still 50 clear.', entityId: 'p1',
+    accents: [{ t: 0.3, kind: 'refline' as const, at: { entityId: 'p1', record: true as const }, text: '23,924' }],
+    ending: 'thesis' as const,
+  };
+  const draft = { title: 't', beats: [beat] };
+  assert.ok(!verifyDraft(draft, recordBrief).some((v) => v.rule === 'accent-anchor'),
+    'a record anchor is legal when the brief has a record');
+  const bad = verifyDraft(draft, miniBrief).filter((v) => v.rule === 'accent-anchor');
+  assert.equal(bad.length, 1, 'a record anchor on a brief with no record must be caught');
+  assert.ok(bad[0].detail.includes('facts.record'), bad[0].detail);
+});
+
 
 console.log(`\n${n} assertions passed.`);
 

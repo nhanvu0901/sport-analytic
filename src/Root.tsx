@@ -30,6 +30,7 @@ import teams from './data/teams.json';
 import redraft from './data/redraft.json';
 import leaderMatrix from './data/leaderMatrix.json';
 import waffle from './data/waffle.json';
+import reboundsChase from './data/reboundsChase.json';
 
 const byAbbr = new Map((teams as any[]).map((t) => [t.abbr, t]));
 const NBA_LOGO = 'https://a.espncdn.com/i/teamlogos/leagues/500/nba.png';
@@ -51,7 +52,20 @@ const cum = stageFor('C01', SCRIPTS.C01, cumulative.title);
 // on the generated draft for brief C01F once one has been written and narrated.
 const full = stageFor('C01F', SCRIPTS.C01F, cumulative.title);
 
-console.log(`C01: ${cum.source} · C01F: ${full.source}`);
+/* ------------------------------------------------------- record chase (371e3032)
+   The same chart plus one horizontal line. A record chase carries no second
+   series on purpose: ESPN returns 5 of Wilt Chamberlain's 14 seasons and zero
+   rebounds, so the holder can never be one — and the chase does not need him
+   to be, only his 23,924. The fallback line exists solely so the composition
+   still has a duration before the draft is written; once
+   src/data/draft-371e3032.json is filled in, `stageFor` drives everything. */
+const chaseFallback = reboundsChase.series.map((r) => ({
+  entityId: r.id,
+  text: `${r.name} has ${fmt.int(r.total)} career rebounds.`,
+}));
+const chase = stageFor('371e3032', chaseFallback, reboundsChase.title);
+
+console.log(`C01: ${cum.source} · C01F: ${full.source} · 371e3032: ${chase.source}`);
 /* ---------------------------------------------------------- generic scripts */
 const listScript = (rows: { id: string; name: string }[], say: (r: any) => string, pick: number[]) =>
   pick.filter((i) => rows[i]).map((i) => ({ entityId: rows[i].id, text: say(rows[i]) }));
@@ -105,6 +119,16 @@ export const RemotionRoot: React.FC = () => (
         <Frame title={full.title} sub={cumulative.sub} logo={NBA_LOGO}>
           {full.audio && <Audio src={staticFile(full.audio)} />}
           <CumulativeLines data={cumulative as any} beats={full.beats} />
+        </Frame>
+      )}
+    />
+    <Composition
+      id="371e3032-cumulative-record-chase" width={V.W} height={V.H} fps={V.FPS}
+      durationInFrames={framesFor(chase.durationMs, V.FPS)}
+      component={() => (
+        <Frame title={chase.title} sub={reboundsChase.sub} logo={NBA_LOGO}>
+          {chase.audio && <Audio src={staticFile(chase.audio)} />}
+          <CumulativeLines data={reboundsChase as any} beats={chase.beats} />
         </Frame>
       )}
     />

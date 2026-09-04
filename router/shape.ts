@@ -25,7 +25,7 @@ export interface DataShape {
 }
 
 export type ChartId =
-  | 'cumulative-multiline' | 'stacked-column-thresholds' | 'ranked-bar'
+  | 'cumulative-multiline' | 'cumulative-record-chase' | 'stacked-column-thresholds' | 'ranked-bar'
   | 'diverging-bar' | 'proportion-bar' | 'bar-delta' | 'scatter-image'
   | 'dot-strip' | 'ridgeline' | 'heatmap-matrix' | 'image-cell-matrix'
   | 'slope-pair' | 'stacked-column-groups' | 'unit-waffle'
@@ -56,6 +56,27 @@ export function route(s: DataShape): Choice {
     : s.entities <= 14 ? 'headshot-56'
     : s.entities <= 40 ? 'headshot-40'
     : s.imageKey === 'logo' ? 'logo-32' : 'dot-10';
+
+  // R1a — a record chase: one cumulative series against an absolute mark.
+  //
+  // The same drawing as R1 plus one horizontal line, and still a DIFFERENT
+  // chart, which is why it gets its own id rather than a flag on
+  // 'cumulative-multiline'. The router's whole job is to name the visual
+  // decision it made; a chase reads as one line dwarfed by a threshold — the
+  // proportion IS the story — where a race reads as lines crossing each
+  // other. Sharing one name would make that decision unobservable, and its
+  // test unfalsifiable: 'cumulative && timeDim' already answers
+  // 'cumulative-multiline', so a case expecting that name would pass whether
+  // this branch existed or not.
+  //
+  // The camera stays static on purpose. A zoom-to-beat on the chaser hides
+  // the ceiling, and the ceiling is the argument.
+  if (s.cumulative && timeDim && (s.thresholds ?? 0) >= 1) {
+    if (s.entities > 4) warnings.push(`${s.entities} series against a fixed mark: past ~4 the reference line stops being the subject`);
+    return { chart: 'cumulative-record-chase', camera: 'static', marker: 'headshot-56',
+      why: 'one accumulating series measured against an absolute record, so the gap to a fixed line is the comparison',
+      alternates: ['cumulative-multiline'], warnings };
+  }
 
   // R1 — cumulative race
   if (s.cumulative && timeDim) {

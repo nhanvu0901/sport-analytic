@@ -11,6 +11,15 @@ const CASES: { video: string; expect: ChartId; shape: DataShape }[] = [
     shape: { entities: 5, entityKind: 'player', measures: [{name:'blocks',type:'count'}],
       dims: [{name:'careerYear',type:'time',steps:18}], cumulative: true, imageKey: 'headshot' } },
 
+  // A record chase is one cumulative series plus one absolute mark, and it is
+  // the shape the pipeline could not previously build: ESPN returns 5 of Wilt
+  // Chamberlain's 14 seasons and zero rebounds, so the holder can never be a
+  // second series — but a chase never needed one. `thresholds: 1` is the only
+  // difference from the case above, and it is what must change the answer.
+  { video: 'Can LeBron catch Wilt\'s career rebounds record?', expect: 'cumulative-record-chase',
+    shape: { entities: 1, entityKind: 'player', measures: [{name:'rebounds',type:'count'}],
+      dims: [{name:'season',type:'time',steps:23}], cumulative: true, thresholds: 1, imageKey: 'headshot' } },
+
   { video: 'Salary Cap Breakdown - Houston Rockets', expect: 'stacked-column-thresholds',
     shape: { entities: 15, entityKind: 'player', measures: [{name:'capHit',type:'money'}],
       dims: [], partOfWhole: true, thresholds: 5, imageKey: 'headshot' } },

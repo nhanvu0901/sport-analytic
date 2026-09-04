@@ -1,7 +1,7 @@
 import React from 'react';
 import { interpolate } from 'remotion';
 import { PLOT, T, TH, V, series as PALETTE, type } from '../theme';
-import { scaleLinear, niceTicks, fmt, ensureContrast, pathAt, easeOut, type Pt } from '../scale';
+import { scaleLinear, niceTicks, fmt, ensureContrast, pathAt, easeOut, thinLabels, type Pt } from '../scale';
 import type { Anchor, Resolve } from '../accent';
 import { PlotFrame } from '../chrome/PlotFrame';
 import { AccentLayer, Camera, PortraitLabel, Headshot, revealState, useBeat, type Beat, type CameraStop } from '../motion';
@@ -22,12 +22,26 @@ export type Serie = {
  *    chart resolves it, because this is the only place that knows the scales.
  */
 export const CumulativeLines: React.FC<{
-  data: { seasons: string[]; series: Serie[]; yLabel: string };
+  data: {
+    seasons: string[]; series: Serie[]; yLabel: string;
+    /**
+     * A record chase: one absolute mark, drawn as a horizontal reference
+     * line. NOT a second series — the point of this prop is that a chase
+     * needs the holder's total and nothing else, which is what makes a
+     * record whose season-by-season data no source carries (ESPN returns 5
+     * of Wilt Chamberlain's 14 seasons and zero rebounds) chartable at all.
+     */
+    record?: { value: number; label: string };
+  };
   beats: Beat[];
 }> = ({ data, beats }) => {
   const { activeId, revealed, progress, active, ms } = useBeat(beats);
 
-  const yMax = Math.max(...data.series.map((s) => s.total));
+  // The record is inside the domain, not outside it. That is the whole visual
+  // argument: at 23,924 against 12,095 the chaser's line has to be dwarfed,
+  // and a y scale fitted to the series alone would draw the same line filling
+  // the frame and quietly answer the opposite question.
+  const yMax = Math.max(...data.series.map((s) => s.total), data.record?.value ?? 0);
   const ticks = niceTicks(0, yMax, 9);
   const y = scaleLinear([0, ticks.at(-1)!], [PLOT.h, 0]);
   const x = scaleLinear([0, data.seasons.length - 1], [0, PLOT.w]);
@@ -46,9 +60,21 @@ export const CumulativeLines: React.FC<{
   const drawn = (s: Serie, isActive: boolean) =>
     pathAt(pointsOf(s), isActive ? easeOut(Math.min(1, progress / 0.68)) : 1);
 
+  /**
+   * The record line, in frame pixels — or null when there is no record.
+   *
+   * A pure function of the data and the scale, so it is identical in both
+   * resolvers and identical on every frame. The x is the RIGHT-HAND END of
+   * the line: `refline` ignores x and spans the plot anyway, and for an
+   * `arrow` (which comes in from up-left) the far end is the one place on a
+   * full-width line that no series head can be sitting on top of.
+   */
+  const recordAt = data.record ? { x: PLOT.x + PLOT.w, y: PLOT.y + y(data.record.value) } : null;
+
   /** Anchor -> pixels at the series' FINAL geometry. Camera stops are computed
    *  once for the whole timeline, so they must not depend on the animating head. */
   const resolveStatic: Resolve = (a: Anchor) => {
+    if (a.record) return recordAt;
     const s = data.series.find((v) => v.id === a.entityId);
     if (!s) return null;
     const pts = pointsOf(s);
@@ -60,6 +86,10 @@ export const CumulativeLines: React.FC<{
 
   /** Data anchor -> frame pixels. The accent layer never computes geometry. */
   const resolve: Resolve = (a: Anchor) => {
+    // Checked before the entity, because `record: true` means the line and
+    // not a point on anybody's series — `entityId` is only there to say whose
+    // chart it is. Null (no record on this chart) rather than a guess.
+    if (a.record) return recordAt;
     const s = data.series.find((v) => v.id === a.entityId);
     if (!s) return null;
     const pts = pointsOf(s);
@@ -105,10 +135,27 @@ export const CumulativeLines: React.FC<{
       <Camera stops={zoomStops} glideMs={620}>
       <PlotFrame
         yTicks={ticks.map((v) => ({ v, pos: y(v) }))}
-        xTicks={data.seasons.map((s, i) => ({ v: i, pos: x(i), label: s }))}
+        xTicks={(() => {
+          // Every tick keeps its position; only the TYPE is sampled, because a
+          // 23-season chase has 31px between ticks and 24 four-digit years do
+          // not fit in 716. An empty label (not undefined) is what suppresses
+          // it — PlotFrame falls back to the tick's own index otherwise.
+          const keep = thinLabels(data.seasons.length, PLOT.w);
+          return data.seasons.map((s, i) => ({ v: i, pos: x(i), label: keep[i] ? s : '' }));
+        })()}
         yLabel={data.yLabel}
         format={fmt.int}
       >
+        {/* Same treatment as the salary-cap thresholds in StackedColumn: the
+            theme's capLine, dashed, full plot width. A record IS a threshold,
+            so it uses the identity's existing threshold idiom rather than a
+            second one invented here. */}
+        {data.record && (
+          <line
+            x1={0} y1={y(data.record.value)} x2={PLOT.w} y2={y(data.record.value)}
+            stroke={T.capLine} strokeWidth={4} strokeDasharray="16 12" opacity={0.85}
+          />
+        )}
         {data.series.map((s, i) => {
           const st = revealState(s.id, revealed, activeId);
           if (!st.shown) return null;
@@ -128,6 +175,18 @@ export const CumulativeLines: React.FC<{
           );
         })}
       </PlotFrame>
+
+      {data.record && (
+        <div
+          style={{
+            position: 'absolute', right: 30, top: PLOT.y + y(data.record.value) - 26,
+            ...type.axisTick, fontWeight: 700, color: T.ink, fontSize: 21,
+            whiteSpace: 'nowrap', background: TH.plate, padding: '1px 6px',
+          }}
+        >
+          {data.record.label}
+        </div>
+      )}
 
       {data.series.map((s, i) => {
         const st = revealState(s.id, revealed, activeId);

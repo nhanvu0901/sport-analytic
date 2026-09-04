@@ -6,6 +6,8 @@
  */
 import cumulative from './data/cumulative.json';
 import { api } from './espn';
+import { fmt } from './scale';
+import type { CareerRecord } from './records';
 import { route, type DataShape } from '../router/shape';
 import { ACCENT_KINDS, DENSITY_FLOOR, DENSITY_CEILING, MIN_ACCENTS_PER_BEAT, MAX_ACCENTS_PER_BEAT } from './accent';
 // A value import, and safe: verify.ts imports ONLY types from this module
@@ -18,10 +20,39 @@ import { WORDS_PER_SECOND } from './verify';
 
 export type Angle = 'verdict-revisited' | 'chase' | 'cohort-fate' | 'rank-inversion' | 'hidden-cost';
 export type Lane = 'evergreen' | 'newsy';
-export type MarkerKind = 'missed-season' | 'jump' | 'plateau' | 'rank-flip' | 'award' | 'undrafted' | 'short-career' | 'leader';
+export type MarkerKind = 'missed-season' | 'jump' | 'plateau' | 'rank-flip' | 'award' | 'undrafted' | 'short-career' | 'leader' | 'record-gap';
 export type EndingVariant = 'thesis' | 'hard-cut' | 'open-question';
 
 export type Marker = { entityId: string; kind: MarkerKind; step?: string; detail: string; value?: number };
+
+/**
+ * The record a chase is measured against, as the brief carries it.
+ *
+ * A record chase needs the HOLDER's season-by-season data not at all: it needs
+ * the chaser's series and one absolute number. That is why this is a scalar
+ * beside `entities` and not a second entity — attempting the second series is
+ * what made a Wilt Chamberlain rebounds video impossible to build, since ESPN
+ * returns 5 of his 14 seasons and zero rebounds.
+ *
+ * `gap` is per entity because "how far short" is the sentence the script will
+ * actually say, and it must be a number the writer is allowed to say —
+ * `allowedNumbers` puts every one of them on the list.
+ */
+export type BriefRecord = {
+  measure: string;
+  unit: string;
+  holder: string;
+  value: number;
+  /** Seasons the holder needed. A chase is a story about pace. */
+  seasons: number;
+  /** The label the chart draws on the line. */
+  label: string;
+  /** How far each charted entity still is from the record. */
+  gap: { entityId: string; short: number }[];
+  /** Provenance, carried verbatim from src/records.ts. */
+  source: string;
+  as_of: string;
+};
 
 export type BriefEntity = {
   id: string; name: string; first: string; last: string;
@@ -65,7 +96,12 @@ export type WriterBrief = {
     density: { floor: number; ceiling: number; target: number };
     accent_budget: AccentBudget;
   };
-  facts: { unit: string; as_of: string; entities: BriefEntity[]; markers: Marker[]; allowed_numbers: number[] };
+  facts: {
+    unit: string; as_of: string; entities: BriefEntity[]; markers: Marker[]; allowed_numbers: number[];
+    /** Present only for a record chase: the single absolute line the chart
+     *  draws and the script argues against. See BriefRecord. */
+    record?: BriefRecord;
+  };
   style: {
     voice: string; rules: string[];
     /** The outer LEGAL bound — a draft outside it is not a Short any more. */
@@ -100,12 +136,32 @@ const median = (xs: number[]): number => {
  * Story markers, detected from shape alone — never chosen by the writer.
  * Deterministic and pure so it can be unit-tested against synthetic data.
  */
-export function detectMarkers(entities: BriefEntity[], seasons: string[]): Marker[] {
+export function detectMarkers(entities: BriefEntity[], seasons: string[], record?: BriefRecord): Marker[] {
   const out: Marker[] = [];
   const sortedSeasons = [...seasons].sort((a, b) => seasonKey(a) - seasonKey(b));
 
   for (const e of entities) {
-    if (e.rank === 1) out.push({ entityId: e.id, kind: 'leader', detail: `most in the class: ${e.total}`, value: e.total });
+    // Rank 1 of 1 is not a fact about anybody. A one-series brief used to
+    // emit "most in the class: 12095" about LeBron James in a video about
+    // the rebounds record Wilt Chamberlain holds — a marker the writer could
+    // only turn into a false claim, since there is no class and he leads
+    // nothing. With two or more entities the ordering is real and it fires.
+    if (e.rank === 1 && entities.length > 1) {
+      out.push({ entityId: e.id, kind: 'leader', detail: `most in the class: ${e.total}`, value: e.total });
+    }
+    // The chase itself, stated as a marker so it reaches the writer through
+    // the same channel as every other story beat — with both numbers it will
+    // want to say, and the holder's season count so the pace comparison is
+    // available rather than guessed at.
+    if (record) {
+      const short = record.value - e.total;
+      out.push({
+        entityId: e.id, kind: 'record-gap', value: short,
+        detail: short > 0
+          ? `${short} ${record.unit} short of ${record.holder}'s ${record.value} after ${e.seasons_played} seasons — the record took ${record.seasons}`
+          : `already past ${record.holder}'s ${record.value} ${record.unit}`,
+      });
+    }
     // Strict === null on purpose: `undefined` (unknown pick) must NEVER fire this.
     if (e.pick === null) out.push({ entityId: e.id, kind: 'undrafted', detail: 'went undrafted' });
     if (e.seasons_played <= 4 && e.seasons_played < seasons.length - 2) {
@@ -184,10 +240,20 @@ export function yearsIn(label: string): number[] {
 }
 
 /** Every number a script is allowed to say — nothing else survives verify.ts. */
-export function allowedNumbers(entities: BriefEntity[], seasons: string[]): number[] {
+export function allowedNumbers(entities: BriefEntity[], seasons: string[], record?: BriefRecord): number[] {
   const nums = new Set<number>();
   for (let i = 1; i <= 12; i++) nums.add(i);
   for (const s of seasons) for (const y of yearsIn(s)) nums.add(y);
+
+  // A record chase's two headline numbers are the record and the gap, and a
+  // script that may not say either cannot state the chase at all. The
+  // holder's season count goes in for the same reason: "23,924 in 14 seasons
+  // against 12,095 in 23" is the whole argument, and 14 is not in 1..12.
+  if (record) {
+    nums.add(record.value);
+    nums.add(record.seasons);
+    for (const g of record.gap) nums.add(Math.abs(g.short));
+  }
 
   for (const e of entities) {
     nums.add(e.total);
@@ -301,6 +367,11 @@ export type BriefInput = {
   seasons: string[];                  // anchor steps, ascending, e.g. '2019-20'
   entities: BriefEntity[];            // already resolved; `rank` is recomputed here from `total`
   cumulative: boolean;
+  /** The all-time record this question chases, when it is one. Supplying it
+   *  is what turns a cumulative chart into a record chase: it fixes the y
+   *  scale, adds the threshold the router routes on, and puts the record and
+   *  the gap on the writer's allowed-numbers list. */
+  record?: CareerRecord;
 };
 
 export function assembleBrief(input: BriefInput): WriterBrief {
@@ -323,8 +394,23 @@ export function assembleBrief(input: BriefInput): WriterBrief {
     series: e.series.map((p) => ({ ...p, step: normaliseStep(p.step) })),
   }));
 
-  const markers = detectMarkers(entities, seasons);
-  const allowed_numbers = allowedNumbers(entities, seasons);
+  // The record becomes a BriefRecord here and nowhere else, so the label the
+  // chart draws, the gaps the markers quote and the gaps `allowedNumbers`
+  // permits are all derived from one arithmetic.
+  const record: BriefRecord | undefined = input.record && {
+    measure: input.record.measure,
+    unit: input.record.unit,
+    holder: input.record.holder,
+    value: input.record.value,
+    seasons: input.record.seasons,
+    label: `${input.record.holder} · ${fmt.int(input.record.value)}`,
+    gap: entities.map((e) => ({ entityId: e.id, short: input.record!.value - e.total })),
+    source: input.record.source,
+    as_of: input.record.asOf,
+  };
+
+  const markers = detectMarkers(entities, seasons, record);
+  const allowed_numbers = allowedNumbers(entities, seasons, record);
 
   const shape: DataShape = {
     entities: entities.length,
@@ -332,6 +418,9 @@ export function assembleBrief(input: BriefInput): WriterBrief {
     measures: [{ name: input.unit, type: 'count' }],
     dims: [{ name: 'season', type: 'time', steps: seasons.length }],
     cumulative: input.cumulative,
+    // One reference line, and the reason the router can tell a record chase
+    // from an ordinary cumulative race without being told the topic.
+    thresholds: record ? 1 : 0,
     imageKey: 'headshot',
   };
   const choice = route(shape);
@@ -378,6 +467,7 @@ export function assembleBrief(input: BriefInput): WriterBrief {
     },
     facts: {
       unit: input.unit,
+      record,
       // "as of" is a CALENDAR YEAR, not a season label: buildBrief's original
       // dataset carried its own bare-year axis (data.seasons, ending "2026"
       // for the 2025-26 season) separately from the season-label steps
@@ -447,6 +537,11 @@ export function assembleBrief(input: BriefInput): WriterBrief {
                         properties: {
                           entityId: { type: 'string' },
                           step: { type: 'string' },
+                          // `additionalProperties: false` means an anchor
+                          // shape the schema does not name is simply not
+                          // writable, so the record anchor has to be declared
+                          // here or the writer cannot point at the line at all.
+                          record: { type: 'boolean', enum: [true] },
                         },
                         required: ['entityId'],
                       },

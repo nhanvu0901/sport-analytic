@@ -15,6 +15,21 @@ export type Anchor = {
   /** Which step along that entity's series — a season label, a year, or an
    *  index. Omitted means its final point. */
   step?: string | number;
+  /**
+   * "The record line on this chart", not a point on a series.
+   *
+   * A record chase is one cumulative series plus one absolute threshold, and
+   * until this existed the writer could not point at the threshold at all:
+   * an Anchor could only name an entity and a step, and a record is neither.
+   * So the interesting sentence in a chase video — the one that puts a
+   * `refline` or an `arrow` on the mark being chased — was unwritable.
+   *
+   * `entityId` stays REQUIRED and names the entity whose chart this is, which
+   * is what lets `Resolve` keep one signature and every existing anchor keep
+   * working unchanged. A chart with no record resolves this to null rather
+   * than guessing, and `verifyDraft` rejects it before that can matter.
+   */
+  record?: true;
 };
 
 /** A closed set. The writer picks from these; anything else is a schema error. */

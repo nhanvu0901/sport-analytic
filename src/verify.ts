@@ -142,6 +142,16 @@ export function verifyDraft(draft: Draft, brief: WriterBrief, wordsPerSecond = W
         } else if (a.at.step !== undefined && !anchorSteps.has(String(a.at.step))) {
           out.push({ beat: i, rule: 'accent-anchor', detail: `accent step "${a.at.step}" is not in visual.anchor_steps` });
         }
+        // `record: true` points at the record line, which only a record chase
+        // has. On any other chart the chart's own Resolve returns null and the
+        // accent silently draws nothing — a beat that looks accented in the
+        // draft and is frozen on screen. Caught here instead.
+        if (a.at.record && !brief.facts.record) {
+          out.push({
+            beat: i, rule: 'accent-anchor',
+            detail: 'accent points at the record line (at.record), but this brief has no facts.record',
+          });
+        }
       }
       if (a.t < 0 || a.t > 1) {
         out.push({ beat: i, rule: 'accent-t', detail: `t=${a.t} is outside [0,1]` });

@@ -12,6 +12,7 @@ import { inferMeasure } from './content/gates';
 import { api, cumulate, findAthleteId, seasonRows, type SeasonRow } from './espn';
 import { careerPoints } from './hoopr';
 import { assembleBrief, detectMarkers, normaliseStep, type Angle, type BriefEntity, type BriefInput, type Marker, type WriterBrief } from './brief';
+import { recordChaseFor, type CareerRecord } from './records';
 import { renderBriefMd } from './briefMd';
 
 export type ResolvedEntity = { name: string; id: string | null; source: 'espn' | 'hoopr' | 'unresolved' };
@@ -114,6 +115,24 @@ export async function briefFromCandidate(
     };
   }
 
+  // 1b. Is this a RECORD CHASE?
+  //
+  // Decided from the question's own wording plus the measure, before a single
+  // entity is resolved, because it changes what "enough data" means. A chase
+  // needs the chaser's series and ONE number; the record holder's
+  // season-by-season data is not part of the chart at all. That is the whole
+  // reason this session was refusable: ESPN returns 5 of Wilt Chamberlain's
+  // 14 seasons and zero rebounds, so he can never be a second series — and a
+  // chase never asked him to be one.
+  //
+  // `recordChaseFor` refuses unless we hold a corroborated record for the
+  // measure, the text reaches for the all-time board, AND the holder is
+  // actually named. See src/records.ts for why all three are necessary.
+  const chase = recordChaseFor(`${c.question} ${c.measurable_as}`, c.entities, measure.espnLabel);
+  if (chase) {
+    log(`record chase: ${chase.holder}'s ${chase.value} ${chase.unit} in ${chase.seasons} seasons (${chase.asOf})`);
+  }
+
   // 2. Resolve entities. Sequential: findAthleteId and careerPoints are both
   // disk-cached, so a burst here would only add complexity, not speed.
   const names = c.entities.slice(0, 10);
@@ -210,7 +229,19 @@ export async function briefFromCandidate(
       : `${measure.espnLabel} not returned by ESPN for any resolved entity`;
     return { ok: false, resolved, reason };
   }
-  if (dropped.length > 0 && entities.length < 2) {
+  // The record only goes on the chart when the holder is NOT one of the
+  // series being drawn. A line at a charted player's own total is a line on
+  // top of their own head — and for an active holder (LeBron James and the
+  // points record) it would be a chase against himself.
+  const record: CareerRecord | undefined =
+    chase && !entities.some((e) => e.id === chase.holderEspnId) ? chase : undefined;
+
+  // A single surviving entity is fatal for a two-series question and fine for
+  // a chase: the second series was never the chart. The guard itself is
+  // untouched — `seriesVerdict` still dropped the entity, `dropped` still
+  // names it and its reason, and a question with no record still refuses here
+  // exactly as before.
+  if (dropped.length > 0 && entities.length < 2 && !record) {
     return {
       ok: false,
       resolved,
@@ -243,6 +274,7 @@ export async function briefFromCandidate(
     seasons,
     entities,
     cumulative: cumulativeMeasure,
+    record,
   };
   const brief = assembleBrief(input);
   const md = renderBriefMd(brief);
@@ -255,7 +287,22 @@ export async function briefFromCandidate(
   if (resolved.some((r) => r.source === 'hoopr')) {
     warnings.push('one or more entities resolved through hoopR, whose data stops at the 2023 season — totals may be missing 2024-2026');
   }
-  if (entities.length < 3) {
+  if (record) {
+    // The provenance travels with the brief rather than living only in a
+    // source file: this number is the one thing on the chart that did not
+    // come from the data source, so whoever reads the brief is told where it
+    // did come from.
+    warnings.push(
+      `the ${record.value} ${record.unit} reference line is ${record.holder}'s all-time record, not ESPN series data — `
+      + `${record.source}`
+    );
+    if (dropped.length) {
+      warnings.push(
+        `${dropped.map((d) => d.name).join(', ')} left out of the chart (${dropped.map((d) => d.detail).join('; ')}) — `
+        + 'a record chase does not need the holder\'s season-by-season data, only the record itself'
+      );
+    }
+  } else if (entities.length < 3) {
     warnings.push(`only ${entities.length} entit${entities.length === 1 ? 'y' : 'ies'} resolved — a chart of two lines is thin`);
   }
   // Fix 4: a warning, not a block — the entity might still be fine for a

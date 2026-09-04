@@ -102,6 +102,36 @@ export function renderBriefMd(b: WriterBrief): string {
   }
   L.push(...(bullets.length ? bullets : ['_No machine-detected markers for this brief._']), '');
 
+  /* 3b. the record, when this is a chase ------------------------------------
+   * Placed before the table because it is the CEILING every number in that
+   * table is measured against — a reader who meets the totals first has
+   * already formed the wrong impression of how big they are. */
+  const rec = b.facts.record;
+  if (rec) {
+    L.push('## The record being chased', '');
+    L.push(
+      `**${esc(rec.holder)} — ${fmt.int(rec.value)} ${esc(rec.unit)}** in ${rec.seasons} seasons. ` +
+      'This is a single horizontal line on the chart, not a second series: ' +
+      "the holder's season-by-season data is not part of this video.",
+      ''
+    );
+    for (const g of rec.gap) {
+      const e = b.facts.entities.find((x) => x.id === g.entityId);
+      if (!e) continue;
+      L.push(g.short > 0
+        ? `- **${esc(e.last)}** is ${fmt.int(g.short)} short, on ${fmt.int(e.total)} after ${e.seasons_played} seasons.`
+        : `- **${esc(e.last)}** is already past it, on ${fmt.int(e.total)}.`);
+    }
+    L.push('');
+    L.push(
+      'To point an accent at the line itself, anchor it with `record`: ' +
+      `\`{ "entityId": "${b.facts.entities[0]?.id ?? '...'}", "record": true }\`. ` +
+      '`entityId` stays required and names whose chart it is; `refline` and `arrow` are the two kinds that read well on it.',
+      ''
+    );
+    L.push(`_Source: ${esc(rec.source)}_`, '');
+  }
+
   /* 4. the numbers ---------------------------------------------------------*/
   L.push('## The numbers', '');
   L.push('| # | Player | Pick | Total | Seasons | Awards |');
@@ -136,6 +166,9 @@ export function renderBriefMd(b: WriterBrief): string {
   /* 6. what you may point at ------------------------------------------------*/
   L.push('## What you may point at', '');
   L.push(`Valid \`at.step\` values: ${b.visual.anchor_steps.map((s) => `\`${s}\``).join(', ')}`, '');
+  if (b.facts.record) {
+    L.push('', `Or \`at: { "entityId": "...", "record": true }\` for the ${fmt.int(b.facts.record.value)} record line.`, '');
+  }
   L.push('| Player | id |', '| --- | --- |');
   for (const e of byRank) L.push(`| ${esc(e.name)} | ${e.id} |`);
   L.push('');
@@ -160,7 +193,12 @@ export function renderBriefMd(b: WriterBrief): string {
         entityId: 'an id from facts.entities',
         accents: [
           { t: '0..1', kind: 'zoom | refline | callout | arrow | spotlight',
-            at: { entityId: '...', step: 'optional — one of the anchor steps' }, text: 'optional label' },
+            at: {
+              entityId: '...',
+              step: 'optional — one of the anchor steps',
+              ...(b.facts.record ? { record: 'optional — true to point at the record line instead of a step' } : {}),
+            },
+            text: 'optional label' },
         ],
         ending: 'thesis | hard-cut | open-question — last beat only',
       },

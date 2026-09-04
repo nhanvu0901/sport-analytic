@@ -21,7 +21,17 @@ import { synthesize, toSentences } from '../src/tts/chatterbox';
 import { SCRIPTS, draftToScriptLines } from '../src/scripts';
 import type { Draft } from '../src/verify';
 
-const id = (process.argv[2] ?? 'C01').toUpperCase();
+/**
+ * An id is a KEY — into SCRIPTS, src/data/draft-<id>.json,
+ * src/data/timeline-<id>.json — not a word, so it must not be case-folded: a
+ * session id like `371e3032` uppercased to `371E3032` writes its timeline
+ * where nothing reads it. The old `.toUpperCase()` was a convenience for
+ * typing `c01`, and that convenience survives as a FALLBACK: the id is used
+ * as given, and only tried in upper case when the id as given names no
+ * hardcoded script.
+ */
+const idArg = process.argv[2] ?? 'C01';
+const id = SCRIPTS[idArg] ? idArg : SCRIPTS[idArg.toUpperCase()] ? idArg.toUpperCase() : idArg;
 const draftPath = process.argv[3];
 const lines = draftPath
   ? draftToScriptLines(JSON.parse(readFileSync(draftPath, 'utf8')) as Draft)
