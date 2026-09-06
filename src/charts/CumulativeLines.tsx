@@ -1,10 +1,10 @@
 import React from 'react';
 import { interpolate } from 'remotion';
 import { PLOT, T, TH, V, series as PALETTE, type } from '../theme';
-import { scaleLinear, niceTicks, fmt, ensureContrast, pathAt, easeOut, thinLabels, type Pt } from '../scale';
+import { scaleLinear, niceTicks, fmt, ensureContrast, pathAt, easeOut, arcFractions, thinLabels, type Pt } from '../scale';
 import type { Anchor, Resolve } from '../accent';
 import { PlotFrame } from '../chrome/PlotFrame';
-import { AccentLayer, Camera, PortraitLabel, Headshot, revealState, useBeat, type Beat, type CameraStop } from '../motion';
+import { AccentLayer, Camera, PortraitLabel, Headshot, revealState, revealExtentAt, useBeat, type Beat, type CameraStop } from '../motion';
 
 export type Serie = {
   id: string; name: string; first: string; last: string; total: number;
@@ -57,8 +57,28 @@ export const CumulativeLines: React.FC<{
       .filter(Boolean) as Pt[]),
   ];
 
-  const drawn = (s: Serie, isActive: boolean) =>
-    pathAt(pointsOf(s), isActive ? easeOut(Math.min(1, progress / 0.68)) : 1);
+  /** Where a season sits along this series' line, 0..1. The index shift is the
+   *  origin `pointsOf` prepends: `points[k]` is vertex `k + 1`. */
+  const stepFractionOf = (s: Serie) => {
+    const fr = arcFractions(pointsOf(s));
+    return (step: string | number) => {
+      const key = String(step).slice(0, 4);
+      const idx = s.points.findIndex((p) => p.season.slice(0, 4) === key);
+      return idx >= 0 ? fr[idx + 1] : null;
+    };
+  };
+
+  /**
+   * How much of a series is drawn, from `revealExtentAt` — a pure function of
+   * the whole beats array and the clock.
+   *
+   * It used to be `progress / 0.68` of the CURRENT beat whenever the series was
+   * active, which meant a chase (one entity, every beat) redrew its single line
+   * from zero nine times. `isActive` is not a parameter any more precisely
+   * because whether the line is moving is no longer a property of this frame's
+   * beat.
+   */
+  const drawn = (s: Serie) => pathAt(pointsOf(s), revealExtentAt(beats, s.id, ms, stepFractionOf(s)));
 
   /**
    * The record line, in frame pixels — or null when there is no record.
@@ -94,7 +114,7 @@ export const CumulativeLines: React.FC<{
     if (!s) return null;
     const pts = pointsOf(s);
     if (a.step === undefined) {
-      const head = drawn(s, s.id === activeId).head;
+      const head = drawn(s).head;
       return { x: PLOT.x + head[0], y: PLOT.y + head[1] };
     }
     const key = String(a.step).slice(0, 4);
@@ -159,7 +179,7 @@ export const CumulativeLines: React.FC<{
         {data.series.map((s, i) => {
           const st = revealState(s.id, revealed, activeId);
           if (!st.shown) return null;
-          const { path } = drawn(s, st.active);
+          const { path } = drawn(s);
           const d = path.map((p) => p.join(',')).join(' ');
           const color = ensureContrast(PALETTE[i % PALETTE.length], TH.ground);
           return (
@@ -191,7 +211,7 @@ export const CumulativeLines: React.FC<{
       {data.series.map((s, i) => {
         const st = revealState(s.id, revealed, activeId);
         if (!st.shown) return null;
-        const { head } = drawn(s, st.active);
+        const { head } = drawn(s);
         const px = PLOT.x + head[0];
         const py = PLOT.y + head[1];
         const color = ensureContrast(PALETTE[i % PALETTE.length], TH.ground);

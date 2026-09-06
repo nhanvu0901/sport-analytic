@@ -209,6 +209,30 @@ export function pathAt(points: readonly Pt[], t: number): { path: Pt[]; head: Pt
   return { path, head: last };
 }
 
+/**
+ * Where every vertex of a polyline sits along it, as an arc-length fraction:
+ * `[0, …, 1]`.
+ *
+ * The inverse of `pathAt`, and in the same parameterisation on purpose —
+ * `pathAt(pts, arcFractions(pts)[k]).head` is exactly `pts[k]`. That identity
+ * is what lets a reveal be driven by DATA rather than by beat progress: a
+ * season is a vertex, and how much of the line is drawn is an arc-length
+ * fraction, so "draw the line as far as 2013-14" becomes a number.
+ */
+export function arcFractions(points: readonly Pt[]): number[] {
+  if (points.length === 0) return [];
+  const cum = [0];
+  let total = 0;
+  for (let i = 1; i < points.length; i++) {
+    total += Math.hypot(points[i][0] - points[i - 1][0], points[i][1] - points[i - 1][1]);
+    cum.push(total);
+  }
+  // A degenerate polyline (every vertex on the same spot) has no length to
+  // divide by; every vertex is then at the start, which is what `pathAt`
+  // returns for it too.
+  return total === 0 ? points.map(() => 0) : cum.map((d) => d / total);
+}
+
 /** Cubic ease-out, for anything that grows. Linear growth reads as mechanical. */
 export const easeOut = (t: number) => 1 - Math.pow(1 - Math.max(0, Math.min(1, t)), 3);
 

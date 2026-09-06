@@ -1,10 +1,10 @@
 /** Plain assertions, no framework. `npm test`. */
 import assert from 'node:assert/strict';
 import { seasonRows, cumulate } from '../src/espn';
-import { scaleLinear, niceTicks, fitRows, binGrid, countRadius, ensureContrast, contrastRatio, pathAt, easeOut, rankPair, gridFit, waffleLayout, thinLabels, type Pt } from '../src/scale';
+import { scaleLinear, niceTicks, fitRows, binGrid, countRadius, ensureContrast, contrastRatio, pathAt, arcFractions, easeOut, rankPair, gridFit, waffleLayout, thinLabels, type Pt } from '../src/scale';
 import teams from '../src/data/teams.json';
 import { eventDensity, DENSITY_FLOOR, DENSITY_CEILING, accentProgress, ACCENT_KINDS } from '../src/accent';
-import { scrollOffsetAt, type ScrollStop } from '../src/motion';
+import { scrollOffsetAt, revealExtentAt, type ScrollStop, type Beat } from '../src/motion';
 import { detectMarkers, allowedNumbers, STYLE_RULES, assembleBrief, normaliseStep, computeAccentBudget, type BriefEntity, type BriefInput, type BriefRecord, type Marker, type WriterBrief } from '../src/brief';
 import { CAREER_RECORDS, namesRecord, recordChaseFor, recordFor } from '../src/records';
 import { deriveHookSeed, seasonUnion, seriesVerdict } from '../src/candidateBrief';
@@ -353,6 +353,108 @@ t('scrollOffsetAt is monotonic while gliding between two stops', () => {
     assert.ok(y >= prev - 1e-9, `offset went backwards at ms=${ms}: ${y} < ${prev}`);
     prev = y;
   }
+});
+
+/* --------------------------------------------- arcFractions / revealExtentAt */
+
+t('arcFractions is the inverse of pathAt: every vertex sits at its own fraction', () => {
+  const pts: Pt[] = [[0, 0], [100, 0], [100, 300], [140, 300]];
+  const fr = arcFractions(pts);
+  assert.equal(fr[0], 0);
+  assert.equal(fr[fr.length - 1], 1);
+  pts.forEach((p, i) => {
+    const head = pathAt(pts, fr[i]).head;
+    assert.ok(Math.hypot(head[0] - p[0], head[1] - p[1]) < 1e-9,
+      `vertex ${i} resolved to ${head} not ${p}`);
+  });
+  // arc length, not vertex index: the 300px leg is most of the line
+  assert.ok(fr[2] > 0.8, `expected the long leg to dominate, got ${fr[2]}`);
+});
+
+/**
+ * A record chase: ONE entity carries every beat. This is the shape that broke —
+ * the reveal used progress within the current beat, so the single line redrew
+ * itself from zero at all eight beat boundaries.
+ */
+const stepAt = (s: string | number) =>
+  ({ A: 0.25, B: 0.5, C: 0.75, D: 1 } as Record<string, number>)[String(s)] ?? null;
+const call = (step?: string, record?: true) => [{
+  t: 0.5, kind: 'callout' as const,
+  at: { entityId: 'lbj', ...(step ? { step } : {}), ...(record ? { record } : {}) },
+  text: 'x',
+}];
+const chase: Beat[] = [
+  { entityId: 'lbj', startMs: 0, endMs: 1000, accents: call('A') },
+  { entityId: 'lbj', startMs: 1000, endMs: 2000, accents: call(undefined, true) },
+  { entityId: 'lbj', startMs: 2000, endMs: 3000, accents: call('B') },
+  { entityId: 'lbj', startMs: 3000, endMs: 4000, accents: call('A') },
+  { entityId: 'lbj', startMs: 4000, endMs: 5000, accents: call('C') },
+];
+const chaseAt = (ms: number) => revealExtentAt(chase, 'lbj', ms, stepAt);
+
+t('revealExtentAt draws a chase up to the step its accents anchor', () => {
+  assert.equal(chaseAt(0), 0, 'nothing drawn at the first frame');
+  assert.ok(Math.abs(chaseAt(680) - 0.25) < 1e-9, `expected 0.25 by the end of the ramp, got ${chaseAt(680)}`);
+  assert.ok(Math.abs(chaseAt(999) - 0.25) < 1e-9, 'and it RESTS there for the rest of the beat');
+  assert.ok(Math.abs(chaseAt(2999) - 0.5) < 1e-9, `beat 3 anchors B, got ${chaseAt(2999)}`);
+});
+
+t('revealExtentAt holds the extent through a beat that anchors no step', () => {
+  // beat 2 carries only a `record: true` anchor — the record LINE, which says
+  // nothing about how far the series has got.
+  for (let ms = 1000; ms < 2000; ms += 50) {
+    assert.ok(Math.abs(chaseAt(ms) - 0.25) < 1e-9, `beat 2 moved the line at ms=${ms}: ${chaseAt(ms)}`);
+  }
+});
+
+t('revealExtentAt never travels backwards, even when a later beat anchors an earlier step', () => {
+  // beat 4 anchors A again, behind B
+  assert.ok(Math.abs(chaseAt(3999) - 0.5) < 1e-9, `expected the running maximum, got ${chaseAt(3999)}`);
+  let prev = -1;
+  for (let ms = 0; ms <= 5200; ms += 25) {
+    const e = chaseAt(ms);
+    assert.ok(e >= prev - 1e-9, `the line redrew itself at ms=${ms}: ${e} < ${prev}`);
+    prev = e;
+  }
+});
+
+t('revealExtentAt completes the line on the last beat of a run', () => {
+  assert.equal(chaseAt(4999), 1, 'the narration must not walk away from a half-drawn career');
+  assert.equal(chaseAt(9999), 1, 'and it stays complete past the end');
+});
+
+/** A race: each beat introduces a DIFFERENT entity. This behaviour must not
+ *  change — each series sweeps in once, in its own beat. */
+const race: Beat[] = [
+  { entityId: 'a', startMs: 0, endMs: 1000, accents: [{ t: 0.5, kind: 'callout', at: { entityId: 'a', step: 'A' }, text: '1' }] },
+  { entityId: 'b', startMs: 1000, endMs: 2000, accents: [{ t: 0.5, kind: 'callout', at: { entityId: 'b', step: 'A' }, text: '2' }] },
+  { entityId: 'a', startMs: 2000, endMs: 3000, accents: [{ t: 0.5, kind: 'callout', at: { entityId: 'a', step: 'B' }, text: '3' }] },
+];
+
+t('revealExtentAt sweeps a race entity to its full career inside its own beat', () => {
+  assert.equal(revealExtentAt(race, 'a', 0, stepAt), 0);
+  assert.ok(revealExtentAt(race, 'a', 340, stepAt) > 0.4, 'and it is visibly moving while it does');
+  assert.equal(revealExtentAt(race, 'a', 680, stepAt), 1, 'full by the end of the ramp, as before');
+  assert.equal(revealExtentAt(race, 'b', 1680, stepAt), 1);
+  assert.equal(revealExtentAt(race, 'b', 500, stepAt), 0, 'and nothing is drawn before its beat');
+});
+
+t('revealExtentAt does not restart a series that becomes active a second time', () => {
+  for (let ms = 2000; ms <= 3000; ms += 50) {
+    assert.equal(revealExtentAt(race, 'a', ms, stepAt), 1, `series a redrew itself at ms=${ms}`);
+  }
+});
+
+t('revealExtentAt grows linearly when no beat anchors a step at all', () => {
+  const bare: Beat[] = [0, 1, 2, 3].map((i) => ({
+    entityId: 'lbj', startMs: i * 1000, endMs: i * 1000 + 1000,
+    accents: [{ t: 0.5, kind: 'zoom' as const, at: { entityId: 'lbj' } }],
+  }));
+  const at = (ms: number) => revealExtentAt(bare, 'lbj', ms, stepAt);
+  assert.ok(Math.abs(at(999) - 0.25) < 1e-9, `expected a quarter after beat 1, got ${at(999)}`);
+  assert.ok(Math.abs(at(1999) - 0.5) < 1e-9, `expected a half after beat 2, got ${at(1999)}`);
+  assert.ok(Math.abs(at(2999) - 0.75) < 1e-9, `expected three quarters after beat 3, got ${at(2999)}`);
+  assert.equal(at(3999), 1);
 });
 
 /* -------------------------------------------------------------- event density */

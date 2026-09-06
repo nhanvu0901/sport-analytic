@@ -168,6 +168,36 @@ instead of at a point — see **Pointing at the record line** below.
 - **Never write pixel coordinates.** You cannot know them and they would be
   wrong anyway; the chart resolves anchors itself.
 
+### An anchor also DRAWS the line
+
+On a career chart — a race or a chase — the line is not drawn once at the
+start and left there. **`at.step` is what tells the chart how far to draw it:**
+anchoring `2013-14` draws that player's line up to 2013-14 and leaves it
+resting there until a later beat anchors a further season. Nothing else moves
+it. This is the only control you have over the picture's own pace, and it is
+the difference between a chart that answers each sentence and one that has
+already finished before the voice has.
+
+Two consequences, and they are not stylistic:
+
+- **Anchor forward in time.** As the script walks a career, each beat's
+  `at.step` should sit at or after the previous beat's. The line never travels
+  backwards — an earlier step anchored later simply holds it where it was — so
+  a beat that anchors behind its predecessor buys nothing and leaves that
+  sentence with a motionless chart.
+- **Do not anchor the final season until the beat that actually reveals the
+  total.** Anchoring the last step completes the line, and a line that is
+  already complete has nothing left to give the beats after it. A hook that
+  anchors the final season has spent the ending in the first sentence; anchor
+  the rookie year there instead, and let the total arrive when you say it.
+
+On a chase this is the whole shape of the video: the hook anchors the first
+season, the middle beats walk the career forward one anchored step at a time,
+and the beat that lands the career total is the one that anchors the last
+season. A beat that names a number should anchor **the season that number
+belongs to** — say 6,086 and anchor 2013-14, and the head of the line is
+sitting on 6,086 while the voice says it.
+
 ### Pointing at the record line
 
 Some briefs are a **record chase**: one player's career total climbing towards
@@ -243,6 +273,8 @@ failure sends the whole script back with the violated rule named.
 - [ ] Every number appears in `allowed_numbers`.
 - [ ] Every `entityId` appears in `facts.entities`.
 - [ ] Every `at.step` appears in `visual.anchor_steps`.
+- [ ] The `at.step` anchors move forward through the career, and the final
+      season is not anchored before the beat that reveals the total.
 - [ ] Any `at.record` anchor is on a brief that has `facts.record`.
 - [ ] Every accent kind is one of the five.
 - [ ] Every beat has 1 to 3 accents, `t` values ≥ 0.12 apart — one on every

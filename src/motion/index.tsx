@@ -149,6 +149,112 @@ export function revealState(id: string, revealed: Set<string>, activeId?: string
   return { shown: false, opacity: 0, active: false };
 }
 
+/**
+ * How much of a series is drawn at `ms`, as an arc-length fraction — the
+ * number `pathAt` takes.
+ *
+ * This replaces `easeOut(progress / 0.68)`, which was progress WITHIN THE
+ * CURRENT BEAT. That works for a race, where each beat introduces a new
+ * entity and so each series sweeps in exactly once. It is wrong for a record
+ * chase, where one entity carries every beat: `progress` resets at each beat
+ * boundary, so the single line redrew itself 0→100% nine times — measured on
+ * out/371e3032-cumulative-record-chase.mp4 as eight head-position resets, one
+ * per boundary, with the head never resting where the narration said.
+ *
+ * The rule, and it is one rule for both shapes:
+ *
+ *  - the extent is the furthest step the ACCENTS have anchored for this series
+ *    in beats 0..i, kept as a running maximum so the line never travels
+ *    backwards. Anchoring `2013-14` means "the line reaches 2013-14", which is
+ *    also what makes the contract writable: the writer already names the
+ *    season each number belongs to.
+ *  - a beat that anchors no step for this series (a `record: true` anchor, or
+ *    an anchor with no `step`, which means the head itself) holds the extent
+ *    it already had.
+ *  - **the last beat of a run completes the line.** A run is consecutive beats
+ *    on the same entity, so in a race — where the narration visits an entity
+ *    for one beat and leaves — every beat is a run end and every series still
+ *    sweeps to its full career in its own beat, exactly as before. In a chase
+ *    the run is the whole video, so only the final beat completes it. The
+ *    principle is the same in both: the narration must not walk away from a
+ *    half-drawn career.
+ *  - with no anchored step ANYWHERE for this series, the extent grows linearly
+ *    over the beats it is active in, so the line still moves rather than
+ *    sitting at zero until the last beat.
+ *
+ * Pure, and a function of the whole beats array rather than of one beat, for
+ * the same reason `scrollOffsetAt` is: Remotion renders frames independently
+ * and in parallel, so nothing may depend on React state, on the frame number
+ * modulo anything, or on the order frames happen to be rendered in.
+ *
+ * `stepFraction` is how the caller answers "where along the line is this
+ * step?" — the chart owns its geometry, so only it can (see `arcFractions`).
+ * Returning null means the step names nothing on this series.
+ */
+export function revealExtentAt(
+  beats: Beat[],
+  id: string,
+  ms: number,
+  stepFraction: (step: string | number) => number | null,
+  ramp = 0.68
+): number {
+  const targets = revealTargets(beats, id, stepFraction);
+  let idx = -1;
+  for (let i = 0; i < beats.length; i++) if (ms >= beats[i].startMs) idx = i;
+  if (idx < 0) return 0;
+
+  const to = targets[idx];
+  const from = idx === 0 ? 0 : targets[idx - 1];
+  if (to <= from) return to;
+
+  // Ease across the beat, not across the whole video: the head has to ARRIVE
+  // at the anchored season while the sentence naming its number is still being
+  // spoken, and then rest there. `ramp` is the share of the beat spent
+  // travelling — the rest is the rest.
+  const b = beats[idx];
+  const span = Math.max(1, (b.endMs - b.startMs) * ramp);
+  return from + (to - from) * easeOut((ms - b.startMs) / span);
+}
+
+/** The extent this series has reached by the END of each beat. Non-decreasing
+ *  by construction, which is what stops the line ever redrawing itself. */
+function revealTargets(
+  beats: Beat[],
+  id: string,
+  stepFraction: (step: string | number) => number | null
+): number[] {
+  /** The furthest step this beat's accents anchor on this series, or 0. */
+  const anchored = (b: Beat) => {
+    let far = 0;
+    for (const a of b.accents ?? []) {
+      // `record: true` is the record LINE, and a missing `step` means the head
+      // itself — neither says how far the line has got.
+      if (!a.at || a.at.record || a.at.entityId !== id || a.at.step === undefined) continue;
+      const f = stepFraction(a.at.step);
+      if (f !== null && f > far) far = f;
+    }
+    return far;
+  };
+
+  const anchorsAnything = beats.some((b) => anchored(b) > 0);
+  const activeCount = beats.filter((b) => b.entityId === id).length;
+
+  const out: number[] = [];
+  let reached = 0;
+  let k = -1;
+  for (let i = 0; i < beats.length; i++) {
+    reached = Math.max(reached, anchored(beats[i]));
+    if (beats[i].entityId === id) {
+      k++;
+      const runEnds = i === beats.length - 1 || beats[i + 1].entityId !== id;
+      if (runEnds) reached = 1;
+      else if (!anchorsAnything) reached = Math.max(reached, (k + 1) / activeCount);
+    }
+    out.push(reached);
+  }
+  return out;
+}
+
 /* --------------------------------------------------------------- 4 accents
    Marker overlays, resolved from DATA anchors by the chart that owns the
    scales. Several can fire inside one beat — that is the point. */
