@@ -7,7 +7,7 @@
 
 export type Lane = 'evergreen' | 'newsy';
 export type Angle = 'verdict-revisited' | 'chase' | 'cohort-fate' | 'rank-inversion' | 'hidden-cost' | 'newsy';
-export type LedgerStatus = 'candidate' | 'rejected' | 'blocked' | 'accepted' | 'produced' | 'stale';
+export type LedgerStatus = 'candidate' | 'rejected' | 'blocked' | 'accepted' | 'narrated' | 'produced' | 'stale';
 export type GateVerdict = 'pass' | 'fail' | 'pending';
 
 export type Gates = {

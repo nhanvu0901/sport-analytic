@@ -13,7 +13,16 @@ const post = (path: string, body: unknown) =>
 
 export const api = {
   health: () => fetch('/api/health').then((r) => toJson<{ ok: boolean; keys: { youcom: boolean; gemini: boolean; tavily: boolean } }>(r)),
-  angles: () => fetch('/api/angles').then((r) => toJson<{ evergreen: string[]; newsy: string[]; next: { evergreen: string; newsy: string } }>(r)),
+  angles: () =>
+    fetch('/api/angles').then((r) =>
+      toJson<{
+        evergreen: string[];
+        newsy: string[];
+        next: { evergreen: string; newsy: string };
+        sessionCount: { evergreen: number; newsy: number };
+        nextIndex: { evergreen: number; newsy: number };
+      }>(r)
+    ),
   sessions: () => fetch('/api/sessions').then((r) => toJson<Session[]>(r)),
   session: (id: string) => fetch(`/api/sessions/${id}`).then((r) => toJson<{ session: Session; candidates: Candidate[] }>(r)),
   createSession: (lanes: string[], intent?: string) => post('/api/sessions', { lanes, intent }).then((r) => toJson<{ session: Session; jobId: string }>(r)),
@@ -28,6 +37,7 @@ export const api = {
   // 404 is an expected "nothing built yet" state here, not an error to throw.
   getBrief: (id: string) => fetch(`/api/sessions/${id}/brief`).then((r) => (r.ok ? toJson<BriefStored>(r) : null)),
   verifyDraft: (id: string, text: string) => post(`/api/sessions/${id}/draft`, { text }).then((r) => toJson<DraftResult>(r)),
+  write: (id: string, force?: boolean) => post(`/api/sessions/${id}/write`, { force: !!force }).then((r) => toJson<{ jobId: string }>(r)),
   skill: () => fetch('/api/skill').then((r) => r.text()),
 };
 

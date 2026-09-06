@@ -81,16 +81,33 @@ export function appendLedger(rec: LedgerRecord): void {
 }
 
 /**
+ * The ledger is append-only, so a topic that moved accepted -> narrated ->
+ * produced has three lines on disk, one per transition. Every reader that
+ * asks "what is the state of this topic" — the Ledger API, isBurned via
+ * digestLines, and the render script's produced-check — must collapse the
+ * log down to one row per `id` first, or a topic would show up as duplicate
+ * (and out of date) rows. The raw log itself is never rewritten.
+ */
+export function latestById(records: LedgerRecord[] = readLedger()): LedgerRecord[] {
+  const byId = new Map<string, LedgerRecord>();
+  for (const rec of records) {
+    const prev = byId.get(rec.id);
+    if (!prev || rec.at.localeCompare(prev.at) >= 0) byId.set(rec.id, rec);
+  }
+  return [...byId.values()];
+}
+
+/**
  * Everything a new discovery prompt must never re-propose: the question text
  * of every settled record, plus any "LESSON:" line from a rejection note —
  * the note IS the point of a reject, so its lesson has to survive into the
  * next prompt, not just the question that triggered it.
  */
-const BURNED_STATUSES: LedgerStatus[] = ['accepted', 'produced', 'rejected', 'blocked'];
+const BURNED_STATUSES: LedgerStatus[] = ['accepted', 'narrated', 'produced', 'rejected', 'blocked'];
 
 export function digestLines(): string[] {
   const out: string[] = [];
-  for (const rec of readLedger()) {
+  for (const rec of latestById()) {
     if (!BURNED_STATUSES.includes(rec.status)) continue;
     if (rec.question) out.push(rec.question);
     for (const line of (rec.note || '').split('\n')) {

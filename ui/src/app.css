@@ -209,9 +209,55 @@ textarea {
   color: var(--accent);
 }
 
-.next-angle {
-  color: var(--ink3);
+/* Compact, always-visible replacement for the old one-line .next-angle —
+   sits below the topbar, so it never affects the Find ideas button's
+   position. Reuses .chip and the mono/ink tokens rather than new ones. */
+.angles-panel {
+  background: var(--surface);
+  border: 1px solid #262b36;
+  border-radius: 6px;
+  padding: 10px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
   font-size: 12px;
+}
+
+.angles-note {
+  color: var(--ink3);
+}
+
+.angles-lane {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.angles-lane-head {
+  color: var(--info);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 11px;
+}
+
+.angle-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.angle-next .angle-gloss,
+.angle-next .angle-en {
+  color: var(--ink);
+}
+
+.angle-gloss {
+  color: var(--ink2);
+}
+
+.angle-en {
+  color: var(--ink3);
 }
 
 .log-panel {
@@ -532,7 +578,17 @@ th {
   overflow: visible;
 }
 
-.status-accepted {
+/* accepted/narrated are both mid-flight — the topic is picked or its
+   narration is written, but nothing has rendered yet, so both read as
+   "unfinished" (warn/amber). produced is the only truly done state (good/
+   green) — this is what used to be missing: nothing ever wrote `produced`,
+   so `accepted` was the only color anyone ever saw and it read as final. */
+.status-accepted,
+.status-narrated {
+  color: var(--warn);
+}
+
+.status-produced {
   color: var(--good);
 }
 
@@ -588,10 +644,20 @@ th {
   color: var(--ink);
 }
 
-.draft-textarea {
-  width: 100%;
-  resize: vertical;
-  font-family: var(--mono);
+.beats-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: var(--surface);
+  border: 1px solid #262b36;
+  border-radius: 6px;
+  padding: 12px 14px;
+}
+
+.beat-line {
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .violations {

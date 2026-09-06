@@ -16,7 +16,7 @@ import { narratesDraft, separatorExample } from '../src/drafts';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { appendLedger, digestLines, isBurned, readLedger, slugify } from '../src/content/ledger';
+import { appendLedger, digestLines, isBurned, latestById, readLedger, slugify } from '../src/content/ledger';
 import { nextAngle } from '../src/content/discover';
 import { createSession } from '../src/content/sessions';
 import { inferMeasure, judgeSameFormat } from '../src/content/gates';
@@ -874,6 +874,51 @@ t('ledger append/read round-trips a record; digestLines includes accepted, exclu
     const lines = digestLines();
     assert.ok(lines.includes(accepted.question));
     assert.ok(!lines.includes(candidate.question));
+  });
+});
+
+t('latestById collapses three records for one topic down to the newest', () => {
+  const gates = {
+    g0_burned: 'pass', g1_real_question: 'pass',
+    g3_data_available: 'pending', g4_chart_fit: 'pending',
+  } as const;
+  const base: LedgerRecord = {
+    id: 'topic-1', question: 'Did this ship?', status: 'accepted', lane: 'evergreen',
+    angle: 'chase', entities: [], evidence: [], gates, session: 's1',
+    at: '2026-09-01T00:00:00.000Z', note: '', recheck_after: null,
+  };
+  const narrated: LedgerRecord = { ...base, status: 'narrated', at: '2026-09-02T00:00:00.000Z' };
+  const produced: LedgerRecord = { ...base, status: 'produced', at: '2026-09-03T00:00:00.000Z' };
+
+  // Fed out of chronological order on purpose — latestById must pick the
+  // newest `at`, not just the last one it happens to see.
+  const collapsed = latestById([narrated, base, produced]);
+  assert.equal(collapsed.length, 1, 'three records for one id must collapse to one row');
+  assert.equal(collapsed[0].status, 'produced');
+  assert.equal(collapsed[0].at, produced.at);
+
+  // A second, unrelated topic must survive alongside it untouched.
+  const other: LedgerRecord = { ...base, id: 'topic-2', status: 'candidate', at: '2026-09-01T12:00:00.000Z' };
+  const both = latestById([base, narrated, produced, other]);
+  assert.equal(both.length, 2);
+  assert.ok(both.some((r) => r.id === 'topic-2' && r.status === 'candidate'));
+});
+
+t('isBurned (via digestLines) treats narrated as burned, same as accepted/produced', () => {
+  withTmpContentRoot(() => {
+    const gates = {
+      g0_burned: 'pass', g1_real_question: 'pass',
+      g3_data_available: 'pending', g4_chart_fit: 'pending',
+    } as const;
+    const narrated: LedgerRecord = {
+      id: 'n1', question: 'Is this narrated question burned?', status: 'narrated', lane: 'evergreen',
+      angle: 'chase', entities: [], evidence: [], gates, session: 's2',
+      at: new Date().toISOString(), note: '', recheck_after: null,
+    };
+    appendLedger(narrated);
+    const lines = digestLines();
+    assert.ok(lines.includes(narrated.question), 'narrated must feed the burned digest, or discovery would re-suggest it');
+    assert.notEqual(isBurned(narrated.question, lines), null);
   });
 });
 

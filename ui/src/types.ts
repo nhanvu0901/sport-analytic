@@ -7,7 +7,7 @@
  */
 export type Lane = 'evergreen' | 'newsy';
 export type Angle = 'verdict-revisited' | 'chase' | 'cohort-fate' | 'rank-inversion' | 'hidden-cost' | 'newsy';
-export type LedgerStatus = 'candidate' | 'rejected' | 'blocked' | 'accepted' | 'produced' | 'stale';
+export type LedgerStatus = 'candidate' | 'rejected' | 'blocked' | 'accepted' | 'narrated' | 'produced' | 'stale';
 export type GateVerdict = 'pass' | 'fail' | 'pending';
 
 export type Gates = {
@@ -92,3 +92,27 @@ export type Violation = { beat: number | null; rule: string; detail: string };
 export type DraftSummary = { beats: number; words: number; durationS: number; events: number; perSecond: number; band: [number, number] };
 
 export type DraftResult = { ok: true; summary: DraftSummary } | { ok: false; violations: Violation[] };
+
+/** One beat of a generated draft — only the fields the Brief screen displays. */
+export type WriteBeat = { text: string; entityId: string; ending?: string };
+
+/** Shape of `POST /api/sessions/:id/write`'s SSE `done` payload — mirrors
+ *  `WriteResult` in `src/writer.ts`. Three failure classes stay distinct
+ *  (auth/refused/rules) because the user's remedy differs for each. */
+export type WriteJobResult =
+  | {
+      ok: true;
+      model: string;
+      cacheHit: boolean;
+      title: string;
+      beats: number;
+      totalWords: number;
+      targetWords: number;
+      targetSeconds: number;
+      totalAccents: number;
+      accentBudget: { min: number; max: number };
+      draft: { title: string; beats: WriteBeat[] };
+    }
+  | { ok: false; kind: 'auth'; message: string }
+  | { ok: false; kind: 'refused'; message: string }
+  | { ok: false; kind: 'rules'; violations: Violation[] };

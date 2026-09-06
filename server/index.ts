@@ -7,12 +7,13 @@ import { join } from 'node:path';
 import cors from 'cors';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { briefFromCandidate } from '../src/candidateBrief';
-import { runDiscovery, nextAngle } from '../src/content/discover';
-import { appendLedger, contentRoot, readLedger } from '../src/content/ledger';
+import { runDiscovery, nextAngle, laneSessionCount } from '../src/content/discover';
+import { appendLedger, contentRoot, latestById, readLedger } from '../src/content/ledger';
 import { createSession, listSessions, loadSession, readCandidates, saveSession, writeCandidates } from '../src/content/sessions';
 import type { LedgerStatus } from '../src/content/types';
 import { readKey } from '../src/content/youcom';
 import { parseDraftText, verifyDraft } from '../src/verify';
+import { writeDraft } from '../src/writer';
 import { getJob, onJobDone, onJobLog, startJob } from './jobs';
 
 const outDir = () => join(process.cwd(), 'out');
@@ -50,7 +51,21 @@ app.get('/api/health', (_req, res) => {
 
 app.get('/api/angles', (_req, res) => {
   const angles = JSON.parse(readFileSync(join(contentRoot(), 'angles.json'), 'utf8'));
-  res.json({ ...angles, next: { evergreen: nextAngle('evergreen'), newsy: nextAngle('newsy') } });
+  // The rotation pointer (`laneSessionCount % angles.length`) lives in
+  // discover.ts because it reads sessions off disk — the browser has no way
+  // to compute this itself, so the route hands over both the raw count and
+  // the resolved index rather than making the UI re-derive it.
+  const evergreenCount = laneSessionCount('evergreen');
+  const newsyCount = laneSessionCount('newsy');
+  res.json({
+    ...angles,
+    next: { evergreen: nextAngle('evergreen'), newsy: nextAngle('newsy') },
+    sessionCount: { evergreen: evergreenCount, newsy: newsyCount },
+    nextIndex: {
+      evergreen: angles.evergreen?.length ? evergreenCount % angles.evergreen.length : 0,
+      newsy: angles.newsy?.length ? newsyCount % angles.newsy.length : 0,
+    },
+  });
 });
 
 app.get('/api/sessions', (_req, res) => {
@@ -177,7 +192,9 @@ app.post('/api/sessions/:id/decide', (req, res) => {
 
 app.get('/api/ledger', (req, res) => {
   const { status, lane, q } = req.query;
-  let records = readLedger();
+  // One row per topic, not one per status transition — latestById collapses
+  // the append-only log down to each id's newest line.
+  let records = latestById(readLedger());
   if (typeof status === 'string' && status) records = records.filter((r) => r.status === status);
   if (typeof lane === 'string' && lane) records = records.filter((r) => r.lane === lane);
   if (typeof q === 'string' && q) {
@@ -246,6 +263,39 @@ app.get('/api/sessions/:id/brief', (req, res) => {
   const md = readFileSync(mdPath, 'utf8');
   res.json({ ok: true, md, chart: brief.visual.chart, entities: brief.facts.entities.length });
 });
+
+app.post(
+  '/api/sessions/:id/write',
+  asyncRoute(async (req, res) => {
+    const jsonPath = briefJsonPath(req.params.id);
+    const mdPath = briefMdPath(req.params.id);
+    if (!existsSync(jsonPath) || !existsSync(mdPath)) {
+      res.status(400).json({ error: 'no brief for this session yet — build one first' });
+      return;
+    }
+    const force = !!req.body?.force;
+    // writeDraft never throws for the three expected failure classes
+    // (auth/refused/rules) — it returns `{ ok: false, kind, ... }`, same as
+    // the /brief route's "our data cannot answer this" outcome, so the job
+    // stays `status: 'done'` and the UI reads the failure kind off the
+    // result instead of every failure collapsing into the job's own `error`.
+    const job = startJob('write', async (log) => {
+      const result = await writeDraft(req.params.id, { force, onLog: log });
+      // Narration written AND verified clean (verifyDraft found 0 violations)
+      // — not a rejected draft (rules/refused/auth). Carry the topic's
+      // question/lane/angle/entities/gates forward from its latest ledger
+      // line rather than writing a stub; if the session has no ledger record
+      // at all (shouldn't happen — accept always writes one first) there is
+      // nothing to extend, so skip silently.
+      if (result.ok) {
+        const prior = latestById(readLedger()).find((r) => r.session === req.params.id);
+        if (prior) appendLedger({ ...prior, status: 'narrated', at: new Date().toISOString() });
+      }
+      return result;
+    });
+    res.json({ jobId: job.id });
+  })
+);
 
 app.post('/api/sessions/:id/draft', (req, res) => {
   const { text } = req.body ?? {};

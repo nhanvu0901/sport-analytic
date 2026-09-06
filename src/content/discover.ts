@@ -28,7 +28,7 @@ const STATS = ['points', 'rebounds', 'assists', 'blocks', 'three-pointers', 'sal
  *  Counting sessions on disk (ported from workflow.py's `_mode_session_count`)
  *  instead of a separate counter file means the pointer can't drift out of
  *  sync with what's actually durable. */
-function laneSessionCount(lane: Lane): number {
+export function laneSessionCount(lane: Lane): number {
   return listSessions().filter((s) => s.lanes.includes(lane)).length;
 }
 

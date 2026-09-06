@@ -1,10 +1,35 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api, subscribeJob } from './api';
-import type { BriefJobResult, BriefStored, Candidate, Coverage, DraftResult, GateVerdict, Gates, LedgerRecord, Session, Violation } from './types';
+import type { BriefJobResult, BriefStored, Candidate, Coverage, GateVerdict, Gates, LedgerRecord, Session, Violation, WriteJobResult } from './types';
 
 type Screen = 'discover' | 'ledger' | 'brief';
 type HealthKeys = { youcom: boolean; gemini: boolean; tavily: boolean };
-type Angles = { evergreen: string[]; newsy: string[]; next: { evergreen: string; newsy: string } };
+type Angles = {
+  evergreen: string[];
+  newsy: string[];
+  next: { evergreen: string; newsy: string };
+  sessionCount: { evergreen: number; newsy: number };
+  nextIndex: { evergreen: number; newsy: number };
+};
+
+// Operator-facing Vietnamese glosses, keyed by the evergreen slug and by the
+// newsy index — content/angles.json itself stays plain string arrays
+// (nextAngle, the ledger, and every stored session consume those strings
+// as-is). A slug or index missing here — e.g. an angle hand-added to the
+// JSON — just means no gloss is shown; the English text still renders.
+const EVERGREEN_GLOSS: Record<string, string> = {
+  'verdict-revisited': 'phán xét lại một draft / trade / hợp đồng sau vài mùa có số liệu thật',
+  chase: 'một cầu thủ đang chơi có đuổi kịp kỷ lục hay một huyền thoại không',
+  'cohort-fate': 'cả một nhóm (draft class, đội all-rookie, roster vô địch) sau này ra sao',
+  'rank-inversion': 'ai thật sự dẫn đầu khi xếp theo một thước đo không ai nhắc tới',
+  'hidden-cost': 'một con số đẹp che đi một con số xấu',
+};
+
+const NEWSY_GLOSS: string[] = [
+  'tranh luận fan đang diễn ra TUẦN NÀY mà một biểu đồ số liệu thật giải quyết được',
+  'phát biểu của bình luận viên / HLV / cầu thủ tuần này mà số liệu xác nhận hoặc bác bỏ',
+  'một chuỗi thắng-thua, phong độ, trade hay cột mốc trong 7 ngày qua',
+];
 
 const GATE_LABEL: Record<keyof Gates, string> = {
   g0_burned: 'not a re-skin of something already done',
@@ -292,8 +317,32 @@ function DiscoverScreen({
         </button>
       </div>
       {angles && (
-        <div className="next-angle mono">
-          next — evergreen: {angles.next.evergreen} · newsy: {angles.next.newsy}
+        <div className="angles-panel mono">
+          <div className="angles-note">typing above overrides this — the rotation only fires when the box is empty</div>
+          {(['evergreen', 'newsy'] as const).map((lane) => (
+            <div key={lane} className="angles-lane">
+              <div className="angles-lane-head">
+                {lane} · {angles.sessionCount[lane]} sessions run · next is index {angles.nextIndex[lane]}
+              </div>
+              {angles[lane].map((raw, i) => {
+                const isNext = i === angles.nextIndex[lane];
+                const colon = lane === 'evergreen' ? raw.indexOf(':') : -1;
+                const slug = colon > -1 ? raw.slice(0, colon).trim() : null;
+                const text = colon > -1 ? raw.slice(colon + 1).trim() : raw;
+                const gloss = lane === 'evergreen' ? (slug ? EVERGREEN_GLOSS[slug] : undefined) : NEWSY_GLOSS[i];
+                return (
+                  <div key={i} className={`angle-item${isNext ? ' angle-next' : ''}`}>
+                    <span className="chip">
+                      {i}
+                      {isNext ? ' · next' : ''}
+                    </span>
+                    {gloss && <span className="angle-gloss">{gloss}</span>}
+                    <span className="angle-en">{text}</span>
+                  </div>
+                );
+              })}
+            </div>
+          ))}
         </div>
       )}
 
@@ -365,7 +414,11 @@ function DiscoverScreen({
   );
 }
 
-function LedgerScreen() {
+// A topic stops here until the user either writes its narration or renders
+// its video — this is the set the Ledger screen offers a way back into.
+const RESUMABLE_STATUSES = new Set(['accepted', 'narrated']);
+
+function LedgerScreen({ onOpenSession }: { onOpenSession: (sessionId: string) => void }) {
   const [status, setStatus] = useState('');
   const [lane, setLane] = useState('');
   const [q, setQ] = useState('');
@@ -380,7 +433,7 @@ function LedgerScreen() {
       <div className="topbar">
         <select value={status} onChange={(e) => setStatus(e.target.value)}>
           <option value="">all statuses</option>
-          {['candidate', 'rejected', 'blocked', 'accepted', 'produced', 'stale'].map((s) => (
+          {['candidate', 'rejected', 'blocked', 'accepted', 'narrated', 'produced', 'stale'].map((s) => (
             <option key={s} value={s}>
               {s}
             </option>
@@ -407,6 +460,7 @@ function LedgerScreen() {
                 <th>question</th>
                 <th>gates</th>
                 <th>note</th>
+                <th></th>
               </tr>
             </thead>
             <tbody>
@@ -424,6 +478,13 @@ function LedgerScreen() {
                   </td>
                   <td className="note-cell" title={r.note}>
                     {r.note}
+                  </td>
+                  <td>
+                    {RESUMABLE_STATUSES.has(r.status) && (
+                      <button className="btn" onClick={() => onOpenSession(r.session)}>
+                        Resume →
+                      </button>
+                    )}
                   </td>
                 </tr>
               ))}
@@ -460,9 +521,9 @@ function BriefScreen({ sessionId, onBack }: { sessionId: string; onBack: () => v
   const [copiedBrief, setCopiedBrief] = useState(false);
   const [skillError, setSkillError] = useState(false);
   const [selectHint, setSelectHint] = useState(false);
-  const [draftText, setDraftText] = useState('');
-  const [verifying, setVerifying] = useState(false);
-  const [draftResult, setDraftResult] = useState<DraftResult | null>(null);
+  const [writing, setWriting] = useState(false);
+  const [writeLog, setWriteLog] = useState<string[]>([]);
+  const [writeResult, setWriteResult] = useState<WriteJobResult | null>(null);
   const preRef = useRef<HTMLPreElement>(null);
 
   useEffect(() => {
@@ -523,14 +584,31 @@ function BriefScreen({ sessionId, onBack }: { sessionId: string; onBack: () => v
     }
   };
 
-  const runVerify = () => {
-    if (!draftText.trim() || verifying) return;
-    setVerifying(true);
-    setDraftResult(null);
-    api
-      .verifyDraft(sessionId, draftText)
-      .then(setDraftResult)
-      .finally(() => setVerifying(false));
+  // A run that ended in `rules` still cached agy's reply (the whole point of
+  // the cache is an unchanged brief replaying the same reply), so a second
+  // click with `force: false` would just replay the same rejected draft.
+  // `force` on any click after the first is how "try again" actually tries
+  // again.
+  const generateNarration = () => {
+    if (writing) return;
+    const force = writeResult !== null;
+    setWriting(true);
+    setWriteLog([]);
+    setWriteResult(null);
+    api.write(sessionId, force).then(({ jobId }) => {
+      subscribeJob(
+        jobId,
+        (line) => setWriteLog((l) => [...l, line]),
+        (done) => {
+          setWriting(false);
+          setWriteResult(
+            done.status === 'done'
+              ? (done.result as WriteJobResult)
+              : { ok: false, kind: 'refused', message: done.error || 'write job failed' }
+          );
+        }
+      );
+    });
   };
 
   return (
@@ -599,21 +677,30 @@ function BriefScreen({ sessionId, onBack }: { sessionId: string; onBack: () => v
             {briefResult.md}
           </pre>
 
-          <label className="mono hint-line">Paste Gemini's reply</label>
-          <textarea
-            className="draft-textarea"
-            rows={12}
-            value={draftText}
-            onChange={(e) => setDraftText(e.target.value)}
-            placeholder="Paste the JSON Gemini returned…"
-          />
-          <button className="btn btn-accent" disabled={!draftText.trim() || verifying} onClick={runVerify}>
-            {verifying ? 'Verifying…' : 'Verify'}
+          <button className="btn btn-accent" disabled={writing} onClick={generateNarration}>
+            {writing ? 'Writing…' : writeResult ? 'Regenerate narration' : 'Generate narration'}
           </button>
 
-          {draftResult && !draftResult.ok && (
+          {(writing || writeLog.length > 0) && (
+            <div className="log-panel">
+              {writing && <span className="pulse-dot" />}
+              <div className="log-lines mono">
+                {writeLog.map((l, i) => (
+                  <div key={i}>{l}</div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {writeResult && !writeResult.ok && writeResult.kind === 'auth' && (
+            <div className="banner-fail">AUTH — agy cannot authenticate. {writeResult.message}</div>
+          )}
+          {writeResult && !writeResult.ok && writeResult.kind === 'refused' && (
+            <div className="banner-fail">REFUSED — agy returned no usable draft. {writeResult.message}</div>
+          )}
+          {writeResult && !writeResult.ok && writeResult.kind === 'rules' && (
             <div className="violations">
-              {[...draftResult.violations]
+              {[...writeResult.violations]
                 .sort((a: Violation, b: Violation) => (a.beat ?? -1) - (b.beat ?? -1))
                 .map((v, i) => (
                   <div key={i} className="violation-line mono">
@@ -622,12 +709,21 @@ function BriefScreen({ sessionId, onBack }: { sessionId: string; onBack: () => v
                 ))}
             </div>
           )}
-          {draftResult && draftResult.ok && (
+
+          {writeResult && writeResult.ok && (
             <>
+              <h3 className="card-question">{writeResult.title}</h3>
               <div className="summary-line mono">
-                {draftResult.summary.beats} beats · {draftResult.summary.words} words · {draftResult.summary.durationS}s ·{' '}
-                {draftResult.summary.events} events · {draftResult.summary.perSecond.toFixed(3)} events/s (band{' '}
-                {draftResult.summary.band[0]}–{draftResult.summary.band[1]})
+                {writeResult.beats} beats · {writeResult.totalWords}/{writeResult.targetWords} words ·{' '}
+                {writeResult.totalAccents} accents (budget {writeResult.accentBudget.min}-{writeResult.accentBudget.max})
+                {writeResult.cacheHit ? ' · cached' : ''}
+              </div>
+              <div className="beats-list mono">
+                {writeResult.draft.beats.map((b, i) => (
+                  <div key={i} className="beat-line">
+                    {i + 1}. {b.text}
+                  </div>
+                ))}
               </div>
               <div className="mono hint-line">
                 next: npx tsx scripts/tts.ts {sessionId} out/draft-{sessionId}.json
@@ -655,6 +751,14 @@ export default function App() {
   }, []);
 
   const keys = useMemo(() => health?.keys, [health]);
+
+  // Ledger "Resume →" jumps into the Brief screen for a topic that is
+  // `accepted` or `narrated` but not yet produced — same nav path an accept
+  // in Discover already takes, just entered from the ledger row instead.
+  const openSession = (sessionId: string) => {
+    setBriefSessionId(sessionId);
+    setScreen('brief');
+  };
 
   return (
     <div className="app">
@@ -692,7 +796,7 @@ export default function App() {
           />
         )}
         {screen === 'brief' && briefSessionId && <BriefScreen sessionId={briefSessionId} onBack={() => setScreen('discover')} />}
-        {screen === 'ledger' && <LedgerScreen />}
+        {screen === 'ledger' && <LedgerScreen onOpenSession={openSession} />}
       </main>
     </div>
   );

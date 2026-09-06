@@ -3,6 +3,7 @@ import { bundle } from '@remotion/bundler';
 import { eventDensity, DENSITY_FLOOR, DENSITY_CEILING } from '../src/accent';
 import { loadTimeline } from '../src/timeline';
 import { selectComposition, renderMedia } from '@remotion/renderer';
+import { appendLedger, latestById, readLedger } from '../src/content/ledger';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -58,4 +59,14 @@ for (const id of ids) {
     },
   });
   console.log(`  ${id} -> out/${id}.mp4  (${composition.durationInFrames}f, ${((Date.now() - t) / 1000).toFixed(1)}s)`);
+
+  // Composition ids for generated videos are `<sessionId>-<chart>` — match
+  // the session id EXACTLY (not by loose prefix) against the ledger. The
+  // eleven C01…C11 demo ids match no session and are left alone, silently.
+  const sessionId = id.split('-')[0];
+  const prior = latestById(readLedger()).find((r) => r.session === sessionId);
+  if (prior) {
+    appendLedger({ ...prior, status: 'produced', at: new Date().toISOString() });
+    console.log(`     ledger: ${prior.id} -> produced`);
+  }
 }
