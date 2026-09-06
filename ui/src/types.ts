@@ -116,3 +116,9 @@ export type WriteJobResult =
   | { ok: false; kind: 'auth'; message: string }
   | { ok: false; kind: 'refused'; message: string }
   | { ok: false; kind: 'rules'; violations: Violation[] };
+
+/** Shape of `POST /api/sessions/:id/render`'s SSE `done` payload — mirrors
+ *  the object `renderComposition` in server/index.ts resolves with. */
+export type RenderJobResult =
+  | { ok: true; compositionId: string; outPath: string }
+  | { ok: false; compositionId: string; message: string };

@@ -14,11 +14,22 @@ import { careerPoints } from './hoopr';
 import { assembleBrief, detectMarkers, normaliseStep, type Angle, type BriefEntity, type BriefInput, type Marker, type WriterBrief } from './brief';
 import { recordChaseFor, type CareerRecord } from './records';
 import { renderBriefMd } from './briefMd';
+import { videoDataFrom, type VideoData } from './videoData';
 
 export type ResolvedEntity = { name: string; id: string | null; source: 'espn' | 'hoopr' | 'unresolved' };
 
 export type CandidateBriefResult =
-  | { ok: true; brief: WriterBrief; md: string; resolved: ResolvedEntity[]; warnings: string[] }
+  | {
+      ok: true; brief: WriterBrief; md: string; resolved: ResolvedEntity[]; warnings: string[];
+      /**
+       * The picture's half of the brief — the seasons, the series and the
+       * record line, in the shape `src/Root.tsx` draws. Built HERE, where the
+       * data is already in hand, rather than recomputed downstream; the
+       * caller writes it to `src/data/video-<id>.json`, which is the only
+       * thing a new session needs before it has a composition.
+       */
+      video: VideoData;
+    }
   | { ok: false; reason: string; resolved: ResolvedEntity[] };
 
 const seasonKey = (label: string) => Number(label.slice(0, 4));
@@ -98,7 +109,7 @@ export function deriveHookSeed(markers: Marker[], whyFansArgue: string): string 
 
 export async function briefFromCandidate(
   c: Candidate,
-  opts?: { log?: (line: string) => void }
+  opts?: { log?: (line: string) => void; sessionId?: string }
 ): Promise<CandidateBriefResult> {
   const log = opts?.log ?? (() => {});
 
@@ -318,5 +329,9 @@ export async function briefFromCandidate(
   }
 
   log(`brief assembled: ${entities.length} entities, chart ${brief.visual.chart}`);
-  return { ok: true, brief, md, resolved, warnings };
+  // `sessionId` only names the file and the composition; it is not a fact
+  // about the topic, so it defaults to the candidate's own id when a caller
+  // has no session (scripts/brief.ts).
+  const video = videoDataFrom(opts?.sessionId ?? c.id, brief);
+  return { ok: true, brief, md, resolved, warnings, video };
 }

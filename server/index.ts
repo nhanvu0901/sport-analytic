@@ -3,10 +3,12 @@
  * 2 reuses as-is for TTS/render — see server/jobs.ts.
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import cors from 'cors';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { briefFromCandidate } from '../src/candidateBrief';
+import { compositionIdFor, isWired, videoDataFrom, WIRED_CHARTS } from '../src/videoData';
 import { runDiscovery, nextAngle, laneSessionCount } from '../src/content/discover';
 import { appendLedger, contentRoot, latestById, readLedger } from '../src/content/ledger';
 import { createSession, listSessions, loadSession, readCandidates, saveSession, writeCandidates } from '../src/content/sessions';
@@ -19,6 +21,9 @@ import { getJob, onJobDone, onJobLog, startJob } from './jobs';
 const outDir = () => join(process.cwd(), 'out');
 const briefJsonPath = (sessionId: string) => join(outDir(), `brief-${sessionId}.json`);
 const briefMdPath = (sessionId: string) => join(outDir(), `brief-${sessionId}.md`);
+/** The chart file the renderer reads. Unlike out/, src/data/ is in the
+ *  Remotion bundle's module graph — src/videos.ts globs it at bundle time. */
+const videoDataPath = (sessionId: string) => join(process.cwd(), 'src', 'data', `video-${sessionId}.json`);
 
 // Overridable so a second instance can run alongside the one already in use
 // on 4310 (e.g. for isolated testing) without either one being killed.
@@ -226,7 +231,7 @@ app.post(
     }
 
     const job = startJob('brief', async (log) => {
-      const result = await briefFromCandidate(candidate, { log });
+      const result = await briefFromCandidate(candidate, { log, sessionId: session.id });
       if (!result.ok) {
         // A candidate our data cannot answer is a normal outcome, not a job
         // failure — nothing is written to out/, and the UI reads `ok:false`
@@ -236,6 +241,13 @@ app.post(
       mkdirSync(outDir(), { recursive: true });
       writeFileSync(briefJsonPath(session.id), JSON.stringify(result.brief, null, 2));
       writeFileSync(briefMdPath(session.id), result.md);
+      // The third file the picture needs, alongside draft-<id>.json and
+      // timeline-<id>.json. Written here because this is where the series,
+      // the seasons and the record line already exist — and because writing
+      // it IS the wiring: src/Root.tsx discovers the composition from it, so
+      // no code edit stands between a brief and a renderable video.
+      writeFileSync(videoDataPath(session.id), JSON.stringify(result.video, null, 1));
+      log(`wrote ${videoDataPath(session.id)}`);
       return {
         ok: true,
         md: result.md,
@@ -294,6 +306,66 @@ app.post(
       return result;
     });
     res.json({ jobId: job.id });
+  })
+);
+
+/** Spawns `npx tsx scripts/render-videos.ts <compositionId>` and streams its
+ *  stdout/stderr as job log lines. That script bundles, renders to
+ *  out/<id>.mp4, and (since the ledger-status feature above) appends
+ *  `produced` to the ledger itself when the id matches a session. */
+function renderComposition(
+  compositionId: string,
+  log: (line: string) => void
+): Promise<{ ok: true; compositionId: string; outPath: string } | { ok: false; compositionId: string; message: string }> {
+  return new Promise((resolve) => {
+    log(`rendering ${compositionId}…`);
+    const proc = spawn('npx', ['tsx', 'scripts/render-videos.ts', compositionId], { cwd: process.cwd() });
+    const onData = (d: Buffer) => {
+      for (const line of d.toString().split('\n')) if (line.trim()) log(line);
+    };
+    proc.stdout.on('data', onData);
+    proc.stderr.on('data', onData);
+    proc.on('error', (err) => resolve({ ok: false, compositionId, message: err.message }));
+    proc.on('close', (code) => {
+      if (code === 0) resolve({ ok: true, compositionId, outPath: `out/${compositionId}.mp4` });
+      else resolve({ ok: false, compositionId, message: `render exited ${code}` });
+    });
+  });
+}
+
+app.post(
+  '/api/sessions/:id/render',
+  asyncRoute(async (req, res) => {
+    const jsonPath = briefJsonPath(req.params.id);
+    if (!existsSync(jsonPath)) {
+      res.status(400).json({ error: 'no brief for this session yet — build one first' });
+      return;
+    }
+    const brief = JSON.parse(readFileSync(jsonPath, 'utf8'));
+    const chart = brief.visual.chart as string;
+
+    // A composition exists only for a chart whose component actually reads
+    // the draft's beats. Wiring the others would ship a video whose picture
+    // ignores its own narration; refusing by name says which chart and why,
+    // instead of letting Remotion fail on an id that was never declared.
+    if (!isWired(chart)) {
+      res.status(400).json({
+        error: `chart "${chart}" is not wired to a composition yet — only ${WIRED_CHARTS.join(' and ')} `
+          + 'can be rendered as video, because they are the only charts whose picture follows the narration. '
+          + `This brief's chart would render a video that ignores its own script, so no composition exists for it.`,
+      });
+      return;
+    }
+    // Briefs built before src/data/video-<id>.json existed have no chart file.
+    // Derive it from the brief already on disk — same pure function the brief
+    // route uses — rather than making the user re-run discovery.
+    if (!existsSync(videoDataPath(req.params.id))) {
+      writeFileSync(videoDataPath(req.params.id), JSON.stringify(videoDataFrom(req.params.id, brief), null, 1));
+    }
+
+    const compositionId = compositionIdFor({ id: req.params.id, chart });
+    const job = startJob('render', (log) => renderComposition(compositionId, log));
+    res.json({ jobId: job.id, compositionId });
   })
 );
 

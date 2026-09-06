@@ -38,6 +38,7 @@ export const api = {
   getBrief: (id: string) => fetch(`/api/sessions/${id}/brief`).then((r) => (r.ok ? toJson<BriefStored>(r) : null)),
   verifyDraft: (id: string, text: string) => post(`/api/sessions/${id}/draft`, { text }).then((r) => toJson<DraftResult>(r)),
   write: (id: string, force?: boolean) => post(`/api/sessions/${id}/write`, { force: !!force }).then((r) => toJson<{ jobId: string }>(r)),
+  render: (id: string) => post(`/api/sessions/${id}/render`, {}).then((r) => toJson<{ jobId: string; compositionId: string }>(r)),
   skill: () => fetch('/api/skill').then((r) => r.text()),
 };
 

@@ -120,6 +120,7 @@ the same `verifyDraft` and writes the same file.
 | `src/motion/` | The six shared techniques: camera, scroll, reveal, annotation, spotlight, inset panel. They know about time; they know nothing about charts. |
 | `src/charts/` | Nine components covering eleven chart types. They know how to draw; they know nothing about time. |
 | `router/` | Picks the chart type from the *shape* of the data, not the topic. |
+| `src/videoData.ts`, `src/videos.ts` | A generated video is three files in `src/data/`, all keyed by the session id: `video-<id>.json` (the chart), `draft-<id>.json` (what is said) and `timeline-<id>.json` (when). `videoData.ts` derives the first from the brief and lists the chart types whose picture actually follows a draft; `videos.ts` globs all three at bundle time, so `src/Root.tsx` discovers a new session's composition instead of naming it. |
 
 That split is the point. A ninth chart type is one file in `src/charts/`, and
 changing how the camera eases is one edit for all of them.

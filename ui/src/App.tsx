@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api, subscribeJob } from './api';
-import type { BriefJobResult, BriefStored, Candidate, Coverage, GateVerdict, Gates, LedgerRecord, Session, Violation, WriteJobResult } from './types';
+import type { BriefJobResult, BriefStored, Candidate, Coverage, GateVerdict, Gates, LedgerRecord, RenderJobResult, Session, Violation, WriteJobResult } from './types';
 
 type Screen = 'discover' | 'ledger' | 'brief';
 type HealthKeys = { youcom: boolean; gemini: boolean; tavily: boolean };
@@ -524,6 +524,9 @@ function BriefScreen({ sessionId, onBack }: { sessionId: string; onBack: () => v
   const [writing, setWriting] = useState(false);
   const [writeLog, setWriteLog] = useState<string[]>([]);
   const [writeResult, setWriteResult] = useState<WriteJobResult | null>(null);
+  const [rendering, setRendering] = useState(false);
+  const [renderLog, setRenderLog] = useState<string[]>([]);
+  const [renderResult, setRenderResult] = useState<RenderJobResult | null>(null);
   const preRef = useRef<HTMLPreElement>(null);
 
   useEffect(() => {
@@ -609,6 +612,41 @@ function BriefScreen({ sessionId, onBack }: { sessionId: string; onBack: () => v
         }
       );
     });
+  };
+
+  const generateVideo = () => {
+    if (rendering) return;
+    setRendering(true);
+    setRenderLog([]);
+    setRenderResult(null);
+    api
+      .render(sessionId)
+      .then(({ jobId }) => {
+        subscribeJob(
+          jobId,
+          (line) => setRenderLog((l) => [...l, line]),
+          (done) => {
+            setRendering(false);
+            setRenderResult(
+              done.status === 'done'
+                ? (done.result as RenderJobResult)
+                : { ok: false, compositionId: sessionId, message: done.error || 'render job failed' }
+            );
+          }
+        );
+      })
+      // The route refuses BEFORE it starts a job — no brief, or a chart with
+      // no composition behind it — and that refusal arrives as a rejected
+      // promise with the reason in it. Without this the button would spin
+      // forever on exactly the case it was added to explain.
+      .catch((err: unknown) => {
+        setRendering(false);
+        setRenderResult({
+          ok: false,
+          compositionId: sessionId,
+          message: err instanceof Error ? err.message : String(err),
+        });
+      });
   };
 
   return (
@@ -728,6 +766,26 @@ function BriefScreen({ sessionId, onBack }: { sessionId: string; onBack: () => v
               <div className="mono hint-line">
                 next: npx tsx scripts/tts.ts {sessionId} out/draft-{sessionId}.json
               </div>
+
+              <button className="btn btn-accent" disabled={rendering} onClick={generateVideo}>
+                {rendering ? 'Rendering…' : renderResult ? 'Render again' : 'Generate video (mp4)'}
+              </button>
+
+              {(rendering || renderLog.length > 0) && (
+                <div className="log-panel">
+                  {rendering && <span className="pulse-dot" />}
+                  <div className="log-lines mono">
+                    {renderLog.map((l, i) => (
+                      <div key={i}>{l}</div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {renderResult && !renderResult.ok && <div className="banner-fail">{renderResult.message}</div>}
+              {renderResult && renderResult.ok && (
+                <div className="mono hint-line">done: {renderResult.outPath}</div>
+              )}
             </>
           )}
         </>

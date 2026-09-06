@@ -12,7 +12,9 @@ import { verifyDraft, parseDraftText, WORDS_PER_SECOND, type Draft } from '../sr
 
 import { renderBriefMd } from '../src/briefMd';
 import { draftToScriptLines } from '../src/scripts';
-import { narratesDraft, separatorExample } from '../src/drafts';
+import { asDraft, narratesDraft, separatorExample } from '../src/drafts';
+import { asTimeline } from '../src/timeline';
+import { compositionIdFor, isWired, videoDataFrom, WIRED_CHARTS } from '../src/videoData';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -1766,6 +1768,92 @@ t('verifyDraft accepts at.record on a chase brief and rejects it on one with no 
   const bad = verifyDraft(draft, miniBrief).filter((v) => v.rule === 'accent-anchor');
   assert.equal(bad.length, 1, 'a record anchor on a brief with no record must be caught');
   assert.ok(bad[0].detail.includes('facts.record'), bad[0].detail);
+});
+
+/* ------------------------------------------- the picture of a generated video
+
+   src/data/video-<id>.json is the third file the renderer reads, next to
+   draft-<id>.json and timeline-<id>.json, and the one that used to be
+   hand-written per video. These lock the derivation down, because
+   src/Root.tsx now DISCOVERS compositions from these files: a wrong axis or a
+   missing record silently draws the wrong picture instead of failing. */
+
+const chaseVideoBrief = assembleBrief({
+  topic: { id: 'chase', question: "Can LeBron James realistically catch Wilt Chamberlain's career rebounds record?",
+    angle: 'chase', lane: 'evergreen', hook_seed: 'The gap is not closing.' },
+  unit: 'rebounds',
+  seasons: ['2003-04', '2004-05', '2005-06'],
+  entities: [entity({ id: '1966', name: 'LeBron James', first: 'LeBron', last: 'James',
+    total: 1576, seasons_played: 3,
+    series: [{ step: '2003-04', value: 432 }, { step: '2004-05', value: 1020 }, { step: '2005-06', value: 1576 }] })],
+  cumulative: true, record: recordFor('REB')!,
+});
+
+t('videoDataFrom puts the chase on the axis CumulativeLines actually draws', () => {
+  const v = videoDataFrom('371e3032', chaseVideoBrief);
+  // One axis entry MORE than there are points: the chart prepends an origin at
+  // x(0) and puts season k at x(k+1), so without the trailing year the final
+  // season lands short of the right-hand edge.
+  assert.deepEqual(v.seasons, ['2003', '2004', '2005', '2006']);
+  assert.equal(v.series.length, 1, 'a chase is one series — the holder is a line, not a second series');
+  assert.deepEqual(v.series[0].points, [
+    { season: '2003-04', value: 432 }, { season: '2004-05', value: 1020 }, { season: '2005-06', value: 1576 },
+  ]);
+  assert.equal(v.series[0].headshot, 'https://a.espncdn.com/i/headshots/nba/players/full/1966.png');
+  assert.deepEqual(v.record, { value: 23924, label: 'Wilt Chamberlain · 23,924' });
+  assert.equal(v.sub, 'Career Rebounds vs the All-Time Record');
+  assert.equal(v.yLabel, 'Total Rebounds');
+  assert.equal(v.title, chaseVideoBrief.topic.question, 'the question is the title until a draft renames it');
+});
+
+t('videoDataFrom omits the record line entirely when the brief has none', () => {
+  const race = assembleBrief({
+    topic: { id: 'race', question: 'Who scored more?', angle: 'chase', lane: 'evergreen', hook_seed: 'x' },
+    unit: 'points', seasons: ['2019-20', '2020-21'],
+    entities: [
+      entity({ id: 'a', name: 'A One', first: 'A', last: 'One', total: 20, seasons_played: 2,
+        series: [{ step: '2019-20', value: 10 }, { step: '2020-21', value: 20 }] }),
+      entity({ id: 'b', name: 'B Two', first: 'B', last: 'Two', total: 30, seasons_played: 2,
+        series: [{ step: '2019-20', value: 15 }, { step: '2020-21', value: 30 }] }),
+    ],
+    cumulative: true,
+  });
+  const v = videoDataFrom('deadbeef', race);
+  assert.equal('record' in v, false, 'an absent record must not become record: undefined on the chart');
+  assert.equal(v.sub, 'Total Points');
+  assert.equal(v.series.length, 2);
+});
+
+t('the composition id of a generated video is <session>-<chart>, unchanged for 371e3032', () => {
+  const v = videoDataFrom('371e3032', chaseVideoBrief);
+  assert.equal(v.chart, 'cumulative-record-chase');
+  assert.equal(compositionIdFor(v), '371e3032-cumulative-record-chase',
+    'the existing mp4, the README and out/ all carry this exact id');
+});
+
+t('only the cumulative family is wired — every other chart gets no composition', () => {
+  assert.deepEqual([...WIRED_CHARTS], ['cumulative-multiline', 'cumulative-record-chase']);
+  assert.ok(isWired('cumulative-multiline'));
+  assert.ok(isWired('cumulative-record-chase'));
+  // These charts do not read a draft's beats. A composition for one would
+  // render a picture that ignores its own narration.
+  for (const chart of ['ranked-bar', 'slope-pair', 'unit-waffle', 'scatter-image', 'heatmap-matrix']) {
+    assert.equal(isWired(chart), false, `${chart} must not be wired`);
+  }
+});
+
+t('an empty placeholder and a missing file are the same answer to the renderer', () => {
+  // src/videos.ts globs src/data/, so either blob can be absent — and
+  // draft-C01.json really is `{}` on disk.
+  assert.equal(asDraft(undefined), null);
+  assert.equal(asDraft({}), null);
+  assert.equal(asDraft({ title: 't', beats: [] }), null);
+  assert.equal(asTimeline(undefined), null);
+  assert.equal(asTimeline({ beats: [] }), null);
+  const tl = asTimeline({ beats: [{ entityId: 'a', startMs: 0, endMs: 10 }], durationMs: 10, audio: 'v.wav' });
+  assert.equal(tl?.durationMs, 10);
+  assert.equal(tl?.audio, 'v.wav');
+  assert.deepEqual(tl?.captions, [], 'a timeline with no captions is still a timeline');
 });
 
 

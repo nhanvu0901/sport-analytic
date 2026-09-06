@@ -1,10 +1,10 @@
 /** Bundle once, render the requested compositions to mp4. */
 import { bundle } from '@remotion/bundler';
 import { eventDensity, DENSITY_FLOOR, DENSITY_CEILING } from '../src/accent';
-import { loadTimeline } from '../src/timeline';
+import { asTimeline } from '../src/timeline';
 import { selectComposition, renderMedia } from '@remotion/renderer';
 import { appendLedger, latestById, readLedger } from '../src/content/ledger';
-import { mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const OUT = join(process.cwd(), 'out');
@@ -14,6 +14,15 @@ const force = argv.includes('--force');
 const ids = argv.filter((a) => !a.startsWith('--'));
 if (!ids.length) throw new Error('pass composition ids');
 
+// Read off disk rather than through an import map: the renderer discovers
+// these files with a bundle-time glob (src/videos.ts), so a generated video's
+// timeline is never named in any module — and a density gate that quietly
+// skipped every id it had no import for would be no gate at all.
+const timelineOf = (id: string) => {
+  const p = join(process.cwd(), 'src', 'data', `timeline-${id.split('-')[0]}.json`);
+  return existsSync(p) ? asTimeline(JSON.parse(readFileSync(p, 'utf8'))) : null;
+};
+
 /**
  * A chart video with too few visual events reads as a freeze frame, and that is
  * measured, not felt: the competitor audit put four winning Shorts at 0.24-0.38
@@ -21,7 +30,7 @@ if (!ids.length) throw new Error('pass composition ids');
  * floor rather than find out after upload.
  */
 for (const id of ids) {
-  const tl = loadTimeline(id.split('-')[0]);
+  const tl = timelineOf(id);
   if (!tl) continue;
   const d = eventDensity(tl.beats, tl.durationMs);
   const verdict = d.perSecond < DENSITY_FLOOR ? 'TOO STATIC'

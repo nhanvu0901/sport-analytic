@@ -384,16 +384,15 @@ export async function writeDraft(id: string, opts: WriteOptions = {}): Promise<W
   // it has no fs, and out/ is not in its module graph. Mirror the accepted
   // draft into src/data/ — see src/drafts.ts for the other half of this
   // convention.
+  // Written unconditionally. It used to be written only when the file already
+  // existed, because src/drafts.ts imported each mirror by name and a bundler
+  // cannot statically import a path that may not exist. src/videos.ts globs
+  // the directory at bundle time instead, so a brand-new id needs no
+  // placeholder and no code edit — writing the file IS the wiring.
   const mirror = join(process.cwd(), draftDataPath(id));
-  let mirrorPath: string | null = null;
-  if (existsSync(mirror)) {
-    writeFileSync(mirror, body);
-    mirrorPath = mirror;
-    log(`wrote:    ${mirror}  (what the renderer reads)`);
-  } else {
-    log(`note:     ${mirror} does not exist, so the renderer will fall back to SCRIPTS[${id}].`);
-    log(`          Create it (an empty {} is enough) and add the id to src/drafts.ts to have the picture follow this draft.`);
-  }
+  writeFileSync(mirror, body);
+  const mirrorPath: string = mirror;
+  log(`wrote:    ${mirror}  (what the renderer reads)`);
   log(`next:     npx tsx scripts/tts.ts ${id} ${outPath}`);
 
   return {

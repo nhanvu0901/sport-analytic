@@ -2,37 +2,34 @@ import type { Beat } from './motion';
 import type { Draft } from './verify';
 import { buildTimeline, type ScriptLine } from './script';
 import { draftToScriptLines } from './scripts';
-import { loadTimeline, type Timeline } from './timeline';
-
-import draftC01 from './data/draft-C01.json';
-import draftC01F from './data/draft-C01F.json';
-import draft371e3032 from './data/draft-371e3032.json';
+import { asTimeline, type Timeline } from './timeline';
 
 /**
  * A generated script reaching the PICTURE, not just the audio.
  *
  * `scripts/write.ts` writes the accepted draft to `out/draft-<id>.json` — what
  * `scripts/tts.ts` narrates — and mirrors it to `src/data/draft-<id>.json`,
- * which is what this module reads. The mirror exists because a Remotion bundle
+ * which is what the renderer reads. The mirror exists because a Remotion bundle
  * is a browser bundle: it has no `fs`, and `out/` is not in its module graph.
- * Same reason `src/timeline.ts` reads `src/data/timeline-<id>.json` instead of
- * measuring a WAV at render time. `scripts/write.ts` writes the other half of
- * this convention and points back here.
+ * Same reason the measured timeline lives in `src/data/timeline-<id>.json`
+ * instead of being measured off a WAV at render time. `scripts/write.ts`
+ * writes the other half of this convention and points back here.
  *
- * The files are always present (an empty `{}` until the first write) because a
- * bundler cannot statically import a path that may not exist — which is also
- * why adding an id here is two edits, the import and `FILES`, and not a glob.
+ * This module used to IMPORT those files, one static import per id, which is
+ * why adding a video was a code edit. It no longer does: `src/videos.ts` globs
+ * `src/data/` at bundle time and hands the two blobs to `stageFor`, so the
+ * files no longer have to exist in advance and no id is named here at all.
  *
- * Everything in here runs ONCE, at module scope, and returns plain data. No
- * hook, no state, no frame arithmetic — the components that consume these
- * beats keep their transforms a pure function of time.
+ * Everything in here is pure and returns plain data. No hook, no state, no
+ * frame arithmetic — the components that consume these beats keep their
+ * transforms a pure function of time.
  */
 
-const FILES: Record<string, unknown> = { C01: draftC01, C01F: draftC01F, '371e3032': draft371e3032 };
-
-/** The accepted draft for a brief id, or null when none has been written. */
-export function loadDraft(id: string): Draft | null {
-  const d = FILES[id] as Draft | undefined;
+/** A parsed `draft-<id>.json`, or null when none has been written yet — an
+ *  id with no mirror at all, and the empty `{}` placeholder, are the same
+ *  answer to the renderer. */
+export function asDraft(raw: unknown): Draft | null {
+  const d = raw as Draft | undefined | null;
   if (!d || !Array.isArray(d.beats) || d.beats.length === 0) return null;
   return d;
 }
@@ -57,8 +54,9 @@ export function loadDraft(id: string): Draft | null {
  *    and Studio shows it directly.
  *  - With no timeline at all, the draft is timed by `buildTimeline`'s
  *    syllable estimate, exactly as a hardcoded script is.
- *  - With no draft at all, `SCRIPTS[id]` drives everything, exactly as before
- *    — which is what keeps the eleven demo compositions working.
+ *  - With no draft at all, the `fallback` lines drive everything, exactly as
+ *    before — `SCRIPTS[id]` for a demo composition, one line per series for a
+ *    generated one. That is what keeps the eleven demos working.
  */
 export type Stage = {
   title: string;
@@ -96,21 +94,32 @@ export function narratesDraft(t: Pick<Timeline, 'chunks'>, draft: Draft): boolea
     && said.every((text, i) => text === norm(draft.beats[i].text));
 }
 
-export function stageFor(id: string, fallback: ScriptLine[], fallbackTitle: string): Stage {
-  const draft = loadDraft(id);
-  const measured = loadTimeline(id);
+/**
+ * `sources` are the two `src/data/` blobs for this id, exactly as they came
+ * off disk — `src/videos.ts` globbed them for the bundle, and either may be
+ * missing. Passed in rather than looked up so this module imports no files and
+ * a new id needs no edit here.
+ */
+export function stageFor(
+  id: string,
+  sources: { draft?: unknown; timeline?: unknown },
+  fallback: ScriptLine[],
+  fallbackTitle: string
+): Stage {
+  const draft = asDraft(sources.draft);
+  const measured = asTimeline(sources.timeline);
   const title = draft?.title ?? fallbackTitle;
 
   if (!measured) {
     const est = buildTimeline(draft ? draftToScriptLines(draft) : fallback);
     return {
       title, beats: est.beats, durationMs: est.durationMs,
-      source: draft ? 'draft, estimated timing (no audio yet)' : 'SCRIPTS, estimated timing (no audio yet)',
+      source: draft ? 'draft, estimated timing (no audio yet)' : 'fallback script, estimated timing (no audio yet)',
     };
   }
 
   const base = { durationMs: measured.durationMs, audio: measured.audio };
-  if (!draft) return { title, beats: measured.beats, ...base, source: 'measured audio + SCRIPTS' };
+  if (!draft) return { title, beats: measured.beats, ...base, source: 'measured audio + fallback script' };
 
   if (!narratesDraft(measured, draft)) {
     console.warn(

@@ -6,6 +6,9 @@ import { fmt } from './scale';
 import { buildTimeline, framesFor } from './script';
 import { SCRIPTS } from './scripts';
 import { stageFor } from './drafts';
+import type { Beat } from './motion';
+import { VIDEOS, draftFor, timelineFor } from './videos';
+import { compositionIdFor, type WiredChart } from './videoData';
 import { Frame } from './chrome/Frame';
 import { CumulativeLines } from './charts/CumulativeLines';
 import { RankedBar } from './charts/RankedBar';
@@ -30,7 +33,6 @@ import teams from './data/teams.json';
 import redraft from './data/redraft.json';
 import leaderMatrix from './data/leaderMatrix.json';
 import waffle from './data/waffle.json';
-import reboundsChase from './data/reboundsChase.json';
 
 const byAbbr = new Map((teams as any[]).map((t) => [t.abbr, t]));
 const NBA_LOGO = 'https://a.espncdn.com/i/teamlogos/leagues/500/nba.png';
@@ -44,28 +46,59 @@ const NBA_LOGO = 'https://a.espncdn.com/i/teamlogos/leagues/500/nba.png';
    below still runs on. See src/drafts.ts for the precedence and why it is in
    that order. The line it logs says which case fired, and Remotion forwards
    browser console output, so a render states what actually drove the picture
-   instead of leaving an ignored draft looking exactly like a used one. */
-const cum = stageFor('C01', SCRIPTS.C01, cumulative.title);
+   instead of leaving an ignored draft looking exactly like a used one.
+
+   `srcFor` is where the two files come from now: src/videos.ts globs
+   src/data/ at bundle time, so neither has to exist and neither is named in
+   an import. */
+const srcFor = (id: string) => ({ draft: draftFor(id), timeline: timelineFor(id) });
+
+const cum = stageFor('C01', srcFor('C01'), SCRIPTS.C01, cumulative.title);
 
 // C01F is the same chart on the SOURCE VIDEO's own narration when no draft
 // exists — that is the A/B against the human host (scripts/finish-ab.sh) — and
 // on the generated draft for brief C01F once one has been written and narrated.
-const full = stageFor('C01F', SCRIPTS.C01F, cumulative.title);
+const full = stageFor('C01F', srcFor('C01F'), SCRIPTS.C01F, cumulative.title);
 
-/* ------------------------------------------------------- record chase (371e3032)
-   The same chart plus one horizontal line. A record chase carries no second
-   series on purpose: ESPN returns 5 of Wilt Chamberlain's 14 seasons and zero
-   rebounds, so the holder can never be one — and the chase does not need him
-   to be, only his 23,924. The fallback line exists solely so the composition
-   still has a duration before the draft is written; once
-   src/data/draft-371e3032.json is filled in, `stageFor` drives everything. */
-const chaseFallback = reboundsChase.series.map((r) => ({
-  entityId: r.id,
-  text: `${r.name} has ${fmt.int(r.total)} career rebounds.`,
-}));
-const chase = stageFor('371e3032', chaseFallback, reboundsChase.title);
+console.log(`C01: ${cum.source} · C01F: ${full.source}`);
 
-console.log(`C01: ${cum.source} · C01F: ${full.source} · 371e3032: ${chase.source}`);
+/* --------------------------------------------------------- generated videos
+   One composition per src/data/video-<id>.json, discovered — never named.
+   A session that has a brief has a video file; give it a narration and it has
+   a draft and a timeline too. No edit in here, ever.
+
+   ONLY the charts on this map get a composition. A chart whose component does
+   not read `beats` would draw a picture that ignores its own narration, which
+   is worse than no video at all, so an unsupported chart gets nothing here and
+   the render route refuses by name. The map's key type is WiredChart, so
+   src/videoData.ts's list and this map cannot drift apart without tsc saying
+   so. `cumulative-record-chase` is the same component as
+   `cumulative-multiline` plus one horizontal line — the record is a prop on
+   the data, not a second series, because ESPN returns 5 of Wilt Chamberlain's
+   14 seasons and zero rebounds and a chase never needed the holder's series. */
+const CHARTS: Record<WiredChart, React.FC<{ data: any; beats: Beat[] }>> = {
+  'cumulative-multiline': CumulativeLines,
+  'cumulative-record-chase': CumulativeLines,
+};
+
+const GENERATED = VIDEOS
+  .filter((v) => v.chart in CHARTS)
+  .map((video) => {
+    // Only used before a draft is written: one line per series, so the
+    // composition still has a duration and something to show.
+    const fallback = video.series.map((s) => ({
+      entityId: s.id,
+      text: `${s.name} has ${fmt.int(s.total)} career ${video.unit}.`,
+    }));
+    return {
+      video,
+      Chart: CHARTS[video.chart as WiredChart],
+      stage: stageFor(video.id, srcFor(video.id), fallback, video.title),
+    };
+  });
+
+for (const g of GENERATED) console.log(`${compositionIdFor(g.video)}: ${g.stage.source}`);
+
 /* ---------------------------------------------------------- generic scripts */
 const listScript = (rows: { id: string; name: string }[], say: (r: any) => string, pick: number[]) =>
   pick.filter((i) => rows[i]).map((i) => ({ entityId: rows[i].id, text: say(rows[i]) }));
@@ -122,16 +155,19 @@ export const RemotionRoot: React.FC = () => (
         </Frame>
       )}
     />
-    <Composition
-      id="371e3032-cumulative-record-chase" width={V.W} height={V.H} fps={V.FPS}
-      durationInFrames={framesFor(chase.durationMs, V.FPS)}
-      component={() => (
-        <Frame title={chase.title} sub={reboundsChase.sub} logo={NBA_LOGO}>
-          {chase.audio && <Audio src={staticFile(chase.audio)} />}
-          <CumulativeLines data={reboundsChase as any} beats={chase.beats} />
-        </Frame>
-      )}
-    />
+    {GENERATED.map(({ video, stage, Chart }) => (
+      <Composition
+        key={compositionIdFor(video)}
+        id={compositionIdFor(video)} width={V.W} height={V.H} fps={V.FPS}
+        durationInFrames={framesFor(stage.durationMs, V.FPS)}
+        component={() => (
+          <Frame title={stage.title} sub={video.sub} logo={NBA_LOGO}>
+            {stage.audio && <Audio src={staticFile(stage.audio)} />}
+            <Chart data={video} beats={stage.beats} />
+          </Frame>
+        )}
+      />
+    ))}
     <Composition
       id="C02-stacked-column-thresholds" width={V.W} height={V.H} fps={V.FPS}
       durationInFrames={framesFor(cap.durationMs, V.FPS)}
