@@ -3,12 +3,26 @@
  * LLM — just the brief's own facts checked against the draft's own claims.
  * Every rule below maps to one line in `brief.style.rules` or `forbidden`.
  */
-import { MIN_ACCENTS_PER_BEAT, MAX_ACCENTS_PER_BEAT, type Accent } from './accent';
+import { MIN_ACCENTS_PER_BEAT, MAX_ACCENTS_PER_BEAT, MIN_ACCENT_GAP, type Accent } from './accent';
 import type { WriterBrief, EndingVariant } from './brief';
 
 export type Draft = {
   title: string;
-  beats: { text: string; entityId: string; accents?: Accent[]; ending?: EndingVariant }[];
+  beats: {
+    text: string;
+    entityId: string;
+    accents?: Accent[];
+    ending?: EndingVariant;
+    /**
+     * The measured moment — absolute ms into the narration — at which this
+     * beat's anchored number is SPOKEN, so the line can arrive on the word
+     * instead of at a fixed share of the beat. A writer never sets this and
+     * cannot: it is written only onto the DERIVED draft by `src/sync.ts`,
+     * after tts.ts has measured the audio, and it is meaningful only
+     * alongside that same `timeline-<id>.json`.
+     */
+    arriveMs?: number;
+  }[];
 };
 
 export type Violation = { beat: number | null; rule: string; detail: string };
@@ -159,8 +173,8 @@ export function verifyDraft(draft: Draft, brief: WriterBrief, wordsPerSecond = W
     }
     for (let x = 0; x < accents.length; x++) {
       for (let y = x + 1; y < accents.length; y++) {
-        if (Math.abs(accents[x].t - accents[y].t) < 0.12) {
-          out.push({ beat: i, rule: 'accent-t', detail: `accents at t=${accents[x].t} and t=${accents[y].t} are closer than 0.12` });
+        if (Math.abs(accents[x].t - accents[y].t) < MIN_ACCENT_GAP) {
+          out.push({ beat: i, rule: 'accent-t', detail: `accents at t=${accents[x].t} and t=${accents[y].t} are closer than ${MIN_ACCENT_GAP}` });
         }
       }
     }

@@ -22,7 +22,7 @@ const BOTTOM_BAND = 3 * 40 + 20; // one legend line per part
  * whole point is the full grid sitting still while parts light up in it.
  */
 export const UnitWaffle: React.FC<{ data: WaffleData; beats: Beat[] }> = ({ data, beats }) => {
-  const { activeId, revealed, progress, active } = useBeat(beats);
+  const { activeId, revealed, progress, active, beatMs } = useBeat(beats);
 
   const gridW = PLOT.w;
   const gridH = PLOT.h - TOP_BAND - BOTTOM_BAND;
@@ -96,7 +96,7 @@ export const UnitWaffle: React.FC<{ data: WaffleData; beats: Beat[] }> = ({ data
         })}
       </div>
 
-      <AccentLayer accents={active?.accents} progress={progress} resolve={resolve} />
+      <AccentLayer accents={active?.accents} progress={progress} beatMs={beatMs} resolve={resolve} />
     </>
   );
 };

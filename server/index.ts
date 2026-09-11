@@ -309,10 +309,22 @@ app.post(
   })
 );
 
-/** Spawns `npx tsx scripts/render-videos.ts <compositionId>` and streams its
- *  stdout/stderr as job log lines. That script bundles, renders to
- *  out/<id>.mp4, and (since the ledger-status feature above) appends
- *  `produced` to the ledger itself when the id matches a session. */
+/**
+ * Spawns `npx tsx scripts/render-videos.ts <compositionId>` and streams its
+ * stdout/stderr as job log lines. That script SNAPS the draft onto the
+ * measured audio (scripts/sync.ts — every accent `t` and each beat's line
+ * arrival moved onto the word the voice actually says), then bundles, renders
+ * to out/<id>.mp4, and appends `produced` to the ledger when the id matches a
+ * session.
+ *
+ * The snap lives in that script rather than in a step of its own here for one
+ * reason: it must happen BEFORE the bundle (src/videos.ts globs src/data/ at
+ * bundle time), so putting it there makes it impossible for this route — or a
+ * hand-run render — to ship a placement that was guessed before the audio
+ * existed. Its "13/15 accents snapped…" lines stream into the UI's render log
+ * like any other. A session with no narration yet says so and renders on the
+ * authored draft, exactly as before.
+ */
 function renderComposition(
   compositionId: string,
   log: (line: string) => void

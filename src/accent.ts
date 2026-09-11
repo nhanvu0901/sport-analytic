@@ -50,11 +50,51 @@ export const ACCENT_KINDS: AccentKind[] = ['zoom', 'refline', 'callout', 'arrow'
  *  know their own scales. Returns null when the anchor names nothing. */
 export type Resolve = (a: Anchor) => { x: number; y: number } | null;
 
-/** 0 before the accent fires, 1 once it has fully landed. */
-export const accentProgress = (accent: Accent, beatProgress: number, span = 0.22) =>
-  easeOut(interpolate(beatProgress, [accent.t, Math.min(1, accent.t + span)], [0, 1], {
+/**
+ * How long an accent takes to land, in WALL-CLOCK milliseconds.
+ *
+ * This used to be `span = 0.22` — a fraction of the beat — and that is why
+ * accents crawled into view. Beats in out/371e3032-cumulative-record-chase.mp4
+ * run 7.1-10.2s, so 0.22 of a beat is 1.56-2.25s (avg 1.87s) of ease-in: even
+ * an accent placed on exactly the right word was still fading up nearly two
+ * seconds after the word was spoken. A pop is a pop at any beat length, so the
+ * duration is fixed and the beat fraction is derived from it per beat.
+ */
+export const ACCENT_LAND_MS = 350;
+
+/**
+ * The minimum distance between two accents in one beat, as a fraction of the
+ * beat. `verifyDraft` rejects a draft that breaks it and `src/sync.ts` restores
+ * it after snapping accents onto measured words; prompts/WRITER_SKILL.md states
+ * it to the writer. One constant so the three cannot drift apart.
+ */
+export const MIN_ACCENT_GAP = 0.12;
+
+/** `ACCENT_LAND_MS` as a share of THIS beat, which is the unit `t` lives in. */
+export const accentSpan = (beatMs: number, landMs = ACCENT_LAND_MS) =>
+  beatMs > 0 ? Math.min(1, landMs / beatMs) : 1;
+
+/**
+ * 0 before the accent fires, 1 once it has fully landed.
+ *
+ * `beatMs` is the beat's own duration, and it is required: the landing span is
+ * wall-clock (`ACCENT_LAND_MS`), so the conversion to beat-relative `t` can
+ * only happen here, where the beat is known. Still a pure function of time.
+ */
+export const accentProgress = (
+  accent: Accent,
+  beatProgress: number,
+  beatMs: number,
+  landMs = ACCENT_LAND_MS
+) => {
+  const to = Math.min(1, accent.t + accentSpan(beatMs, landMs));
+  // `interpolate` needs a strictly increasing range, and an accent snapped to
+  // the last word of a beat can sit at t=1 with nowhere left to travel.
+  if (to <= accent.t) return beatProgress >= accent.t ? 1 : 0;
+  return easeOut(interpolate(beatProgress, [accent.t, to], [0, 1], {
     extrapolateLeft: 'clamp', extrapolateRight: 'clamp',
   }));
+};
 
 /**
  * Visual events per second — the number the competitor audit measured.

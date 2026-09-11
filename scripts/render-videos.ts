@@ -6,6 +6,7 @@ import { selectComposition, renderMedia } from '@remotion/renderer';
 import { appendLedger, latestById, readLedger } from '../src/content/ledger';
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { syncDraftFiles } from './sync';
 
 const OUT = join(process.cwd(), 'out');
 mkdirSync(OUT, { recursive: true });
@@ -47,6 +48,24 @@ for (const id of ids) {
       `${id} is below the ${DENSITY_FLOOR}/s floor. Add ~${need} more accents, ` +
       `or pass --force to render it anyway.`);
   }
+}
+
+/**
+ * Snap accents (and the line's arrival) onto the measured words BEFORE
+ * bundling — src/videos.ts globs src/data/ at bundle time, so a draft derived
+ * after this point would not be in the picture at all.
+ *
+ * Every accent `t` a writer authors is a guess made before the audio existed;
+ * on 371e3032 those guesses missed their own words by a median of 1.93s. This
+ * is the only step that can fix that, it needs the WAV, and putting it here
+ * rather than in a caller means the CLI and the server's render route (which
+ * spawns this script) cannot skip it. A composition with no draft, no
+ * narration or no brief — the eleven C01…C11 demos — says so and renders
+ * exactly as before.
+ */
+for (const id of ids) {
+  const res = syncDraftFiles(id.split('-')[0], { log: (l) => console.log(l) });
+  if (!res.ok) console.log(`  ${id}: not snapped — ${res.reason}`);
 }
 
 const serveUrl = await bundle({ entryPoint: join(process.cwd(), 'src/index.ts') });

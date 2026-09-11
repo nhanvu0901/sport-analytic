@@ -35,7 +35,7 @@ export const ImageCellMatrix: React.FC<{
   beats: Beat[];
   highlightCol?: string;
 }> = ({ data, beats, highlightCol }) => {
-  const { activeId, progress, active } = useBeat(beats);
+  const { activeId, progress, active, beatMs } = useBeat(beats);
 
   const rows = data.rowDim.steps.length;
   const cols = data.colDim.steps.length;
@@ -144,7 +144,7 @@ export const ImageCellMatrix: React.FC<{
           })
         )}
       </Camera>
-      <AccentLayer accents={active?.accents} progress={progress} resolve={resolve} />
+      <AccentLayer accents={active?.accents} progress={progress} beatMs={beatMs} resolve={resolve} />
     </>
   );
 };

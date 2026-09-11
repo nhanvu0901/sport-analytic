@@ -7,9 +7,11 @@ import { asTimeline, type Timeline } from './timeline';
 /**
  * A generated script reaching the PICTURE, not just the audio.
  *
- * `scripts/write.ts` writes the accepted draft to `out/draft-<id>.json` — what
- * `scripts/tts.ts` narrates — and mirrors it to `src/data/draft-<id>.json`,
- * which is what the renderer reads. The mirror exists because a Remotion bundle
+ * `scripts/write.ts` writes the accepted draft to `out/draft-<id>.json` — the
+ * AUTHORED original, and what `scripts/tts.ts` narrates — and mirrors it to
+ * `src/data/draft-<id>.json`, which is what the renderer reads and which
+ * `scripts/sync.ts` later overwrites with the DERIVED draft: the same script
+ * with every accent `t` snapped onto the word the voice actually says. The mirror exists because a Remotion bundle
  * is a browser bundle: it has no `fs`, and `out/` is not in its module graph.
  * Same reason the measured timeline lives in `src/data/timeline-<id>.json`
  * instead of being measured off a WAV at render time. `scripts/write.ts`
@@ -130,11 +132,15 @@ export function stageFor(
     return { title, beats: measured.beats, ...base, source: 'measured audio, draft ignored (script mismatch)' };
   }
 
-  // Same script: measured spans, the draft's entities and accents.
+  // Same script: measured spans, the draft's entities and accents — plus
+  // `arriveMs`, which only the DERIVED draft (src/data/draft-<id>.json, snapped
+  // by scripts/sync.ts against this very timeline) carries. An authored draft
+  // has none and the line falls back to its ramp, as before.
   const beats = measured.beats.map((b, i) => ({
     ...b,
     entityId: draft.beats[i].entityId,
     accents: draft.beats[i].accents,
+    arriveMs: draft.beats[i].arriveMs,
   }));
   return { title, beats, ...base, source: 'measured audio + draft accents' };
 }

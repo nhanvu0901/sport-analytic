@@ -35,7 +35,7 @@ export const CumulativeLines: React.FC<{
   };
   beats: Beat[];
 }> = ({ data, beats }) => {
-  const { activeId, revealed, progress, active, ms } = useBeat(beats);
+  const { activeId, revealed, progress, active, ms, beatMs } = useBeat(beats);
 
   // The record is inside the domain, not outside it. That is the whole visual
   // argument: at 23,924 against 12,095 the chaser's line has to be dwarfed,
@@ -237,7 +237,7 @@ export const CumulativeLines: React.FC<{
       })}
 
       </Camera>
-      <AccentLayer accents={active?.accents} progress={progress} resolve={resolve} />
+      <AccentLayer accents={active?.accents} progress={progress} beatMs={beatMs} resolve={resolve} />
     </>
   );
 };

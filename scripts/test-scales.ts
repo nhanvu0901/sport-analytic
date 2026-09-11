@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { seasonRows, cumulate } from '../src/espn';
 import { scaleLinear, niceTicks, fitRows, binGrid, countRadius, ensureContrast, contrastRatio, pathAt, arcFractions, easeOut, rankPair, gridFit, waffleLayout, thinLabels, type Pt } from '../src/scale';
 import teams from '../src/data/teams.json';
-import { eventDensity, DENSITY_FLOOR, DENSITY_CEILING, accentProgress, ACCENT_KINDS } from '../src/accent';
+import { eventDensity, DENSITY_FLOOR, DENSITY_CEILING, accentProgress, accentSpan, ACCENT_KINDS, ACCENT_LAND_MS, MIN_ACCENT_GAP } from '../src/accent';
+import { driftStats, matchAccent, parseSrt, snapDraft, spaceAccents, stepYears, type Word } from '../src/sync';
 import { scrollOffsetAt, revealExtentAt, type ScrollStop, type Beat } from '../src/motion';
 import { detectMarkers, allowedNumbers, STYLE_RULES, assembleBrief, normaliseStep, computeAccentBudget, type BriefEntity, type BriefInput, type BriefRecord, type Marker, type WriterBrief } from '../src/brief';
 import { CAREER_RECORDS, namesRecord, recordChaseFor, recordFor } from '../src/records';
@@ -483,10 +484,43 @@ t('eventDensity survives a zero-length timeline', () => {
 
 t('accentProgress is 0 before it fires and 1 once landed', () => {
   const a = { t: 0.5, kind: 'callout' as const };
-  assert.equal(accentProgress(a, 0.0), 0);
-  assert.equal(accentProgress(a, 0.5), 0);
-  assert.ok(accentProgress(a, 0.62) > 0.9, 'lands within its span');
-  assert.equal(accentProgress(a, 1.0), 1);
+  assert.equal(accentProgress(a, 0.0, 8000), 0);
+  assert.equal(accentProgress(a, 0.5, 8000), 0);
+  assert.ok(accentProgress(a, 0.62, 8000) > 0.9, 'lands within its span');
+  assert.equal(accentProgress(a, 1.0, 8000), 1);
+});
+
+/**
+ * Bug B: the landing span used to be 0.22 of the BEAT, so in this video's
+ * 7.1-10.2s beats an accent took 1.56-2.25s to become visible and was still
+ * fading up long after its word had been spoken.
+ */
+t('the accent landing span is wall-clock, not a share of the beat', () => {
+  const a = { t: 0.5, kind: 'callout' as const };
+  // the ms at which the accent is fully landed, measured through the function
+  const landedMs = (beatMs: number) => {
+    for (let ms = 0; ms <= beatMs; ms++) {
+      if (accentProgress(a, ms / beatMs, beatMs) >= 1) return ms;
+    }
+    return Infinity;
+  };
+  for (const beatMs of [7080, 8360, 10240]) {
+    const took = landedMs(beatMs) - 0.5 * beatMs;
+    assert.ok(Math.abs(took - ACCENT_LAND_MS) <= 2,
+      `a ${beatMs}ms beat took ${took}ms to land, expected ${ACCENT_LAND_MS}ms`);
+    // what it used to be, for the record
+    assert.ok(0.22 * beatMs > 1500, 'the old beat-relative span really was over 1.5s');
+  }
+  assert.ok(Math.abs(accentSpan(7000) - 0.05) < 1e-9, 'and the beat fraction comes from the beat');
+  assert.equal(accentSpan(0), 1, 'a zero-length beat cannot crawl');
+});
+
+t('an accent snapped to the last word of a beat still lands', () => {
+  // t + span > 1: interpolate needs a strictly increasing range, so this used
+  // to be a crash waiting for a late accent.
+  const a = { t: 1, kind: 'callout' as const };
+  assert.equal(accentProgress(a, 0.99, 8000), 0);
+  assert.equal(accentProgress(a, 1, 8000), 1);
 });
 
 t('the accent kinds are a closed set the writer picks from', () => {
@@ -1856,6 +1890,235 @@ t('an empty placeholder and a missing file are the same answer to the renderer',
   assert.deepEqual(tl?.captions, [], 'a timeline with no captions is still a timeline');
 });
 
+
+/* ============================================================== src/sync.ts
+   Snapping a draft onto the audio that was actually recorded. Every `t` a
+   writer authors is a guess made before the WAV existed; these fixtures are
+   the measured half of the contract. */
+
+t('parseSrt reads the word-level file tts.ts writes', () => {
+  const words = parseSrt(
+    '1\n00:00:00,000 --> 00:00:00,445\nLeBron\n\n'
+    + '2\n00:00:00,445 --> 00:00:00,890\nJames\n\n'
+    + '3\n00:01:06,415 --> 00:01:06,760\n11,829\n');
+  assert.equal(words.length, 3);
+  assert.deepEqual(words[0], { text: 'LeBron', startMs: 0, endMs: 445 });
+  assert.deepEqual(words[2], { text: '11,829', startMs: 66_415, endMs: 66_760 });
+  assert.equal(parseSrt('1\r\n00:00:01,500 --> 00:00:02,000\r\nJames\r\n')[0].startMs, 1500,
+    'CRLF is the same file');
+  assert.deepEqual(parseSrt('not an srt at all'), [], 'and junk is no words, not a crash');
+});
+
+t('stepYears is how a season is SPOKEN, end year first', () => {
+  assert.deepEqual(stepYears('2012-13'), ['2013', '2012']);
+  assert.deepEqual(stepYears('1999-00'), ['2000', '1999'], 'not 1900');
+  assert.deepEqual(stepYears(2013), ['2013']);
+});
+
+const w = (text: string, startMs: number, endMs: number): Word => ({ text, startMs, endMs });
+const B0 = [w('LeBron', 0, 500), w('James', 500, 1000), w('reached', 1000, 1500),
+            w('11,829', 7000, 7500), w('rebounds', 7500, 8000)];
+const B1 = [w('Wilt', 10_000, 10_500), w("Chamberlain's", 10_500, 11_000), w('record', 11_000, 11_500),
+            w('of', 11_500, 12_000), w('23,924', 12_500, 13_000), w('came', 13_000, 13_500),
+            w('in', 13_500, 14_000), w('2018.', 14_000, 14_500)];
+const SYNC_FACTS = {
+  entities: [{
+    id: 'lbj', first: 'LeBron', last: 'James',
+    series: [{ step: '2016-17', value: 7706 }, { step: '2017-18', value: 11_829 }],
+  }],
+  record: { holder: 'Wilt Chamberlain' },
+};
+const acc = (t: number, kind: any, at?: any, text?: string) => ({ t, kind, ...(at ? { at } : {}), ...(text ? { text } : {}) });
+
+t('matchAccent: a number in the accent text beats every other rule', () => {
+  const m = matchAccent(acc(0.2, 'callout', { entityId: 'lbj', step: '2017-18' }, '11,829 short'), B0, SYNC_FACTS);
+  assert.equal(m.rule, 'digits');
+  assert.equal(m.word?.startMs, 7000, 'commas and the trailing word are stripped on both sides');
+  const dot = matchAccent(acc(0.2, 'callout', undefined, '2018'), B1, SYNC_FACTS);
+  assert.equal(dot.word?.text, '2018.', 'and so is a full stop');
+});
+
+t('matchAccent: the record line goes to the holder’s surname, then to the word "record"', () => {
+  const holder = matchAccent(acc(0.5, 'arrow', { entityId: 'lbj', record: true }), B1, SYNC_FACTS);
+  assert.equal(holder.rule, 'record');
+  assert.equal(holder.word?.text, "Chamberlain's", 'possessive and all');
+  const noHolder = matchAccent(acc(0.5, 'arrow', { entityId: 'lbj', record: true }), B1, {});
+  assert.equal(noHolder.word?.text, 'record', 'with no brief, the word itself');
+});
+
+t('matchAccent: a step goes to its year, and only a stepless anchor to the surname', () => {
+  // B0 says "James" but no year at all, so the surname is all there is
+  const surname = matchAccent(acc(0.9, 'zoom', { entityId: 'lbj', step: '2017-18' }), B0, SYNC_FACTS);
+  assert.equal(surname.rule, 'entity');
+  assert.equal(surname.word?.startMs, 500);
+  // same anchor, a beat that never says "James": the step's year carries it
+  const year = matchAccent(acc(0.8, 'spotlight', { entityId: 'lbj', step: '2017-18' }), B1, SYNC_FACTS);
+  assert.equal(year.rule, 'step');
+  assert.equal(year.word?.text, '2018.');
+  // THE PRECEDENCE, pinned: a beat saying both. An accent on {entity, step}
+  // points at that POINT — the year names the point, the surname only says
+  // whose chart it is — so the year wins. Ranking the surname first put the
+  // spotlight on LeBron's 2023-24 point 6.7s after the line reached it.
+  const both = [w('James', 0, 400), w('reached', 400, 800), w('11,185', 1000, 1400),
+                w('in', 1400, 1800), w('2018,', 1800, 2200)];
+  const beats = matchAccent(acc(0.5, 'spotlight', { entityId: 'lbj', step: '2017-18' }), both, SYNC_FACTS);
+  assert.equal(beats.rule, 'step');
+  assert.equal(beats.word?.startMs, 1800, 'the year, not the surname at 0ms');
+});
+
+t('matchAccent: no word means no match, and no invented position', () => {
+  const miss = matchAccent(acc(0.42, 'callout', { entityId: 'nobody' }, '9,999'), B0, SYNC_FACTS);
+  assert.equal(miss.rule, 'none');
+  assert.equal(miss.word, null);
+});
+
+t('matchAccent prefers a word an earlier accent has not already claimed', () => {
+  const twice = [w('James', 0, 400), w('James', 5000, 5400)];
+  const a = acc(0.1, 'zoom', { entityId: 'lbj' });
+  const first = matchAccent(a, twice, SYNC_FACTS);
+  const second = matchAccent(a, twice, SYNC_FACTS, new Set([first.word!]));
+  assert.equal(first.word?.startMs, 0);
+  assert.equal(second.word?.startMs, 5000);
+});
+
+t('spaceAccents pushes a too-close pair apart around its midpoint', () => {
+  const { ts, moved } = spaceAccents([0.50, 0.52]);
+  assert.deepEqual(moved, [true, true], 'neither is privileged and neither is dropped');
+  assert.ok(Math.abs(ts[1] - ts[0] - MIN_ACCENT_GAP) < 1e-9);
+  assert.ok(Math.abs((ts[0] + ts[1]) / 2 - 0.51) < 1e-9, 'the midpoint is preserved');
+  const far = spaceAccents([0.2, 0.5, 0.9]);
+  assert.deepEqual(far.moved, [false, false, false], 'and a legal beat is left alone');
+});
+
+t('spaceAccents keeps the whole run inside [0,1]', () => {
+  const low = spaceAccents([0.0, 0.01]);
+  assert.equal(low.ts[0], 0);
+  assert.ok(Math.abs(low.ts[1] - MIN_ACCENT_GAP) < 1e-9);
+  const high = spaceAccents([0.99, 1.0, 1.0]);
+  assert.ok(high.ts.every((x) => x >= 0 && x <= 1), high.ts.join(', '));
+  assert.ok(Math.abs(high.ts[2] - 1) < 1e-9);
+  for (let i = 1; i < 3; i++) {
+    assert.ok(high.ts[i] - high.ts[i - 1] >= MIN_ACCENT_GAP - 1e-9, high.ts.join(', '));
+  }
+});
+
+const syncDraft: Draft = {
+  title: 'chase',
+  beats: [
+    { text: 'LeBron James reached 11,829 rebounds.', entityId: 'lbj', accents: [
+      acc(0.2, 'callout', { entityId: 'lbj', step: '2017-18' }, '11,829 short'),
+      acc(0.9, 'zoom', { entityId: 'lbj', step: '2017-18' }),
+    ] as any },
+    { text: "Wilt Chamberlain's record of 23,924 came in 2018.", entityId: 'lbj', accents: [
+      acc(0.1, 'refline', { entityId: 'lbj', record: true }, '23,924'),
+      acc(0.5, 'arrow', { entityId: 'lbj', record: true }),
+      acc(0.8, 'spotlight', { entityId: 'lbj', step: '2017-18' }),
+    ] as any },
+  ],
+};
+const syncBeats = [{ startMs: 0, endMs: 10_000 }, { startMs: 10_000, endMs: 20_000 }];
+const snapped = snapDraft(syncDraft, syncBeats, [...B0, ...B1], SYNC_FACTS);
+
+t('snapDraft finishes each accent’s ease-in exactly as its word begins', () => {
+  const fire = (b: number, k: number) => syncBeats[b].startMs + snapped.draft.beats[b].accents![k].t * 10_000;
+  assert.ok(Math.abs(fire(0, 0) - (7000 - ACCENT_LAND_MS)) < 1, `beat 0 callout fired at ${fire(0, 0)}`);
+  assert.ok(Math.abs(fire(0, 1) - (500 - ACCENT_LAND_MS)) < 1);
+  assert.ok(Math.abs(fire(1, 0) - (12_500 - ACCENT_LAND_MS)) < 1);
+  assert.ok(Math.abs(fire(1, 2) - (14_000 - ACCENT_LAND_MS)) < 1);
+  // and the report says which rule placed each of them
+  assert.deepEqual(snapped.report.accents.map((a) => a.rule),
+    ['digits', 'entity', 'digits', 'record', 'step']);
+  assert.equal(snapped.report.matched, 5);
+  assert.equal(snapped.report.unmatched, 0);
+});
+
+t('snapDraft does not mutate the draft it was given', () => {
+  assert.equal(syncDraft.beats[0].accents![0].t, 0.2, 'the authored t is still authored');
+  assert.equal(syncDraft.beats[1].accents![2].t, 0.8);
+  assert.notEqual(snapped.draft.beats[0].accents, syncDraft.beats[0].accents);
+  assert.equal(snapped.draft.beats[0].text, syncDraft.beats[0].text, 'and the script is untouched');
+});
+
+t('snapDraft keeps the authored t when no word matches, and says so', () => {
+  const orphan: Draft = {
+    title: 'x',
+    beats: [{ text: 'nothing measurable here.', entityId: 'lbj', accents: [acc(0.42, 'zoom', { entityId: 'nobody' })] as any }],
+  };
+  const r = snapDraft(orphan, [{ startMs: 0, endMs: 10_000 }], B0, SYNC_FACTS);
+  assert.equal(r.draft.beats[0].accents![0].t, 0.42);
+  assert.equal(r.report.accents[0].rule, 'none');
+  assert.equal(r.report.accents[0].snappedDriftMs, null, 'there is no drift to report against no word');
+  assert.equal(r.report.unmatched, 1);
+});
+
+t('snapDraft restores the 0.12 spacing when two words are too close together', () => {
+  const tight: Draft = {
+    title: 'x',
+    beats: [{ text: 'James reached 11,829 rebounds.', entityId: 'lbj', accents: [
+      acc(0.1, 'callout', { entityId: 'lbj' }, '11,829'),
+      acc(0.9, 'zoom', { entityId: 'lbj' }, 'rebounds 11,829'),
+    ] as any }],
+  };
+  // both accents name the same number, so both snap onto words 500ms apart
+  const r = snapDraft(tight, [{ startMs: 0, endMs: 10_000 }], B0, SYNC_FACTS);
+  const [a, b] = r.draft.beats[0].accents!.map((x) => x.t);
+  assert.ok(Math.abs(b - a) >= MIN_ACCENT_GAP - 1e-9, `${a} and ${b} are still too close`);
+  assert.deepEqual(r.report.spacedBeats, [0]);
+  assert.ok(r.report.accents.every((x) => x.spaced), 'and the report marks the accents it moved');
+});
+
+t('snapDraft measures when each beat’s anchored NUMBER is spoken', () => {
+  // beat 0 anchors 2017-18, whose series value is 11,829 — spoken at 7.0s,
+  // not at the 0.68-of-the-beat ramp's 6.8s
+  assert.equal(snapped.draft.beats[0].arriveMs, 7000);
+  assert.equal(snapped.report.arrivals[0].value, 11_829);
+  assert.equal(snapped.report.arrivals[0].rampArriveMs, 6800);
+  assert.equal(snapped.report.arrivals[0].rampDriftMs, -200);
+  // beat 1 anchors the same step but never says the number: no arrival, and
+  // the ramp stays in charge rather than a guess being invented
+  assert.equal(snapped.draft.beats[1].arriveMs, undefined);
+  assert.equal(snapped.report.arrivals[1].arriveMs, null);
+});
+
+t('driftStats is the median of the ABSOLUTE drift, with the over-half-second count', () => {
+  const s1 = driftStats([-1930, 3810, null, 120]);
+  assert.equal(s1.n, 3);
+  assert.equal(s1.median, 1930);
+  assert.equal(s1.worst, 3810);
+  assert.equal(s1.over500, 2);
+  assert.deepEqual(driftStats([null, null]), { n: 0, median: 0, worst: 0, over500: 0 });
+});
+
+/* ------------------------- the line arriving on the word, not on a fraction */
+
+const arriveChase: Beat[] = chase.map((b, i) => (i === 0 ? { ...b, arriveMs: 900 } : b));
+
+t('revealExtentAt eases the line to its target at arriveMs, not at 0.68 of the beat', () => {
+  const at = (ms: number) => revealExtentAt(arriveChase, 'lbj', ms, stepAt);
+  assert.ok(at(680) < 0.25 - 1e-6, `the ramp used to be finished here: ${at(680)}`);
+  assert.ok(Math.abs(at(900) - 0.25) < 1e-9, `expected the target at arriveMs, got ${at(900)}`);
+  assert.ok(Math.abs(at(999) - 0.25) < 1e-9, 'and it rests there for the rest of the beat');
+  let prev = -1;
+  for (let ms = 0; ms <= 5200; ms += 25) {
+    const e = at(ms);
+    assert.ok(e >= prev - 1e-9, `the line went backwards at ms=${ms}`);
+    prev = e;
+  }
+});
+
+t('revealExtentAt keeps the ramp for a beat with no measured arrival', () => {
+  // the other four beats of the same fixture carry no arriveMs at all
+  assert.ok(Math.abs(revealExtentAt(arriveChase, 'lbj', 2680, stepAt) - 0.5) < 1e-9);
+  assert.ok(Math.abs(revealExtentAt(chase, 'lbj', 680, stepAt) - 0.25) < 1e-9, 'unchanged without one');
+});
+
+t('revealExtentAt ignores an arriveMs belonging to another series', () => {
+  // beat 2 narrates 'b' and carries its arrival; series 'a' is not what that
+  // word timed, so 'a' falls back to its own ramp.
+  const mixed: Beat[] = race.map((b, i) => (i === 1 ? { ...b, arriveMs: 1100 } : b));
+  assert.equal(revealExtentAt(mixed, 'b', 1100, stepAt), 1, 'b arrives on its word');
+  assert.ok(Math.abs(revealExtentAt(mixed, 'a', 680, stepAt) - 1) < 1e-9, 'a keeps its own ramp');
+});
 
 console.log(`\n${n} assertions passed.`);
 

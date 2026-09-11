@@ -26,7 +26,7 @@ export const SlopePair: React.FC<{
   data: { title: string; sub: string; rows: RedraftRow[]; unresolved: number };
   beats: Beat[];
 }> = ({ data, beats }) => {
-  const { activeId, revealed, progress, active } = useBeat(beats);
+  const { activeId, revealed, progress, active, beatMs } = useBeat(beats);
   const ms = useMs();
 
   const moves = rankPair(data.rows, (r) => r.id, (r) => r.actualPick, (r) => r.value);
@@ -263,7 +263,7 @@ export const SlopePair: React.FC<{
           ) : canvas}
         </div>
       </Camera>
-      <AccentLayer accents={active?.accents} progress={progress} resolve={resolve} />
+      <AccentLayer accents={active?.accents} progress={progress} beatMs={beatMs} resolve={resolve} />
       {/* Only shown when a row actually carries a hoopR-sourced number — an
           unmarked mixed-source total is the kind of quiet error that ends up
           in a video, so the footnote earns its place only when it applies. */}

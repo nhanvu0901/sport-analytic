@@ -19,6 +19,15 @@ export type Beat = {
   startMs: number;
   endMs: number;
   accents?: Accent[];
+  /**
+   * The measured moment (absolute ms) this beat's anchored number is SPOKEN.
+   * `revealExtentAt` eases the line to its target by then rather than at a
+   * fixed share of the beat. Written onto the derived draft by `src/sync.ts`
+   * and carried here by `stageFor`; absent whenever the audio has not been
+   * measured, or the number was not found in it, and the `ramp` fallback
+   * then behaves exactly as it always did.
+   */
+  arriveMs?: number;
 };
 
 export const useMs = () => {
@@ -37,7 +46,11 @@ export function useBeat(beats: Beat[]) {
   const progress = active
     ? interpolate(ms, [active.startMs, active.endMs], [0, 1], { extrapolateRight: 'clamp', extrapolateLeft: 'clamp' })
     : 0;
-  return { ms, idx, active, activeId: active?.entityId, revealed, progress };
+  // `beatMs` travels with `progress` because the two are always needed
+  // together: an accent's landing span is wall-clock (ACCENT_LAND_MS) and
+  // only this duration turns it into the beat fraction `t` lives in.
+  const beatMs = active ? active.endMs - active.startMs : 0;
+  return { ms, idx, active, activeId: active?.entityId, revealed, progress, beatMs };
 }
 
 /* ------------------------------------------------------------------- 1 camera
@@ -207,12 +220,18 @@ export function revealExtentAt(
   const from = idx === 0 ? 0 : targets[idx - 1];
   if (to <= from) return to;
 
-  // Ease across the beat, not across the whole video: the head has to ARRIVE
-  // at the anchored season while the sentence naming its number is still being
-  // spoken, and then rest there. `ramp` is the share of the beat spent
-  // travelling — the rest is the rest.
+  // Arrive ON THE WORD. `ramp` — a share of the beat — put the head at its
+  // target at 68% of the beat no matter when the voice said the number, which
+  // measured on 371e3032 as a median 2.73s late and 5.02s late on the beat
+  // that says "11,185". `arriveMs` is that word's measured start, so the ease
+  // finishes exactly there; `ramp` stays the fallback for a beat whose number
+  // the sync pass could not find (and for every estimated timeline, which has
+  // no measured words at all).
   const b = beats[idx];
-  const span = Math.max(1, (b.endMs - b.startMs) * ramp);
+  const arrival = b.entityId === id && b.arriveMs !== undefined
+    ? b.arriveMs - b.startMs
+    : (b.endMs - b.startMs) * ramp;
+  const span = Math.max(1, arrival);
   return from + (to - from) * easeOut((ms - b.startMs) / span);
 }
 
@@ -261,13 +280,16 @@ function revealTargets(
 export const AccentLayer: React.FC<{
   accents?: Accent[];
   progress: number;
+  /** The active beat's duration, from `useBeat`. The landing span is a fixed
+   *  350ms, so it has to be converted to this beat's own fraction. */
+  beatMs: number;
   resolve: Resolve;
-}> = ({ accents, progress, resolve }) => {
+}> = ({ accents, progress, beatMs, resolve }) => {
   if (!accents?.length) return null;
   return (
     <>
       {accents.map((a, i) => (
-        <One key={i} accent={a} p={accentProgress(a, progress)} resolve={resolve} />
+        <One key={i} accent={a} p={accentProgress(a, progress, beatMs)} resolve={resolve} />
       ))}
     </>
   );
@@ -414,6 +436,20 @@ export const InsetPanel: React.FC<{
   );
 };
 
+/**
+ * <Img> that hides itself instead of crashing the whole render when its
+ * source 404s. ESPN's headshot CDN doesn't have a photo for every athlete id
+ * — retired players and analysts (e.g. Charles Barkley, id 37) are a measured
+ * miss — and Remotion's <Img> calls cancelRender() on a failed load unless an
+ * onError handler is passed, which took down an entire render over one
+ * missing photo. A blank slot is a fine degradation; a crashed render is not.
+ */
+const SafeImg: React.FC<{ src: string; style: React.CSSProperties }> = ({ src, style }) => {
+  const [broken, setBroken] = React.useState(false);
+  if (broken) return null;
+  return <Img src={src} style={style} onError={() => setBroken(true)} />;
+};
+
 /** Portrait cut-out riding a data point, sized by how many are on screen. */
 export const Headshot: React.FC<{
   src: string; x: number; y: number; size: number; ring?: string; opacity?: number;
@@ -428,7 +464,7 @@ export const Headshot: React.FC<{
       filter: `drop-shadow(0 3px 8px ${TH.panel.shadow.includes('0.65') ? 'rgba(0,0,0,.7)' : 'rgba(0,0,0,.22)'})`,
     }}
   >
-    <Img src={src} style={{ width: '100%', height: '100%', objectFit: 'cover', objectPosition: 'top center' }} />
+    <SafeImg src={src} style={{ width: '100%', height: '100%', objectFit: 'cover', objectPosition: 'top center' }} />
   </div>
 );
 
@@ -438,7 +474,7 @@ export const PortraitLabel: React.FC<{
   x: number; y: number; width?: number; opacity?: number;
 }> = ({ src, first, last, color, x, y, width = 340, opacity = 1 }) => (
   <div style={{ position: 'absolute', left: x, top: y, width, opacity }}>
-    <Img src={src} style={{ width, filter: 'drop-shadow(0 6px 12px rgba(0,0,0,.28))' }} />
+    <SafeImg src={src} style={{ width, filter: 'drop-shadow(0 6px 12px rgba(0,0,0,.28))' }} />
     <div style={{ marginTop: 4, marginLeft: 22 }}>
       <div style={{ ...type.nameFirst, color, lineHeight: 1 }}>{first}</div>
       <div style={{ ...type.nameLast, color, lineHeight: 1 }}>{last}</div>

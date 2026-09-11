@@ -31,7 +31,7 @@ export const DotStrip: React.FC<{
   beats: Beat[];
   labelIds?: string[];
 }> = ({ data, beats, labelIds = [] }) => {
-  const { activeId, progress, active } = useBeat(beats);
+  const { activeId, progress, active, beatMs } = useBeat(beats);
 
   const xs = data.rows.map((r) => r.x);
   const xt = niceTicks(Math.min(...xs), Math.max(...xs), 6);
@@ -128,7 +128,7 @@ export const DotStrip: React.FC<{
       })()}
 
       <Key maxCount={maxCount} rMax={rMax} />
-      <AccentLayer accents={active?.accents} progress={progress} resolve={resolve} />
+      <AccentLayer accents={active?.accents} progress={progress} beatMs={beatMs} resolve={resolve} />
     </>
   );
 };

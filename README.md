@@ -98,10 +98,23 @@ replays the approved script instead of re-rolling it — an LLM CLI has no seed.
 `--force` re-rolls anyway; `DRAFT_CACHE_VERSION` invalidates every cached draft
 at once.
 
-A verified draft lands in `out/draft-<id>.json`, which `scripts/tts.ts`
-narrates, and is mirrored to `src/data/draft-<id>.json`, which the renderer
-reads — see `src/drafts.ts` for why the picture needs its own copy, and what
-happens when the audio and the draft disagree.
+A verified draft lands in `out/draft-<id>.json` — the **authored** script,
+which `scripts/tts.ts` narrates — and is mirrored to `src/data/draft-<id>.json`,
+which the renderer reads. See `src/drafts.ts` for why the picture needs its own
+copy, and what happens when the audio and the draft disagree.
+
+Once the audio exists, that mirror is **derived**, not copied.
+`scripts/render-videos.ts` runs `scripts/sync.ts` before it bundles, which
+rewrites `src/data/draft-<id>.json` from the measured words in
+`out/voice-<id>.srt`: every accent `t` moved so the accent finishes landing as
+its own word begins, and a per-beat `arriveMs` so the line reaches the season
+it is talking about on the word rather than at a fixed share of the beat. On
+371e3032 the authored placements missed their words by a median of 1.23s (worst
+5.96s) and the line arrived a median 1.85s off (worst 5.09s); both are 0.35s
+and 0.00s after. The derived file carries a `_derived` stamp saying where it
+came from, `out/draft-<id>.json` is never touched, and re-running the snap is
+free. Run it by hand with `npx tsx scripts/sync.ts <id> [reportPath]` to see
+the per-accent table.
 
 The paste loop still works when the CLI is not available: paste
 `prompts/WRITER_SKILL.md` then `out/brief-<id>.md` into any Gemini chat, save
@@ -120,6 +133,7 @@ the same `verifyDraft` and writes the same file.
 | `src/motion/` | The six shared techniques: camera, scroll, reveal, annotation, spotlight, inset panel. They know about time; they know nothing about charts. |
 | `src/charts/` | Nine components covering eleven chart types. They know how to draw; they know nothing about time. |
 | `router/` | Picks the chart type from the *shape* of the data, not the topic. |
+| `src/sync.ts` | Snaps a draft onto the audio that was actually recorded: each accent to the word it names, each beat to the moment its number is spoken. Pure — `scripts/sync.ts` is the file IO, and `scripts/render-videos.ts` calls it before every bundle. |
 | `src/videoData.ts`, `src/videos.ts` | A generated video is three files in `src/data/`, all keyed by the session id: `video-<id>.json` (the chart), `draft-<id>.json` (what is said) and `timeline-<id>.json` (when). `videoData.ts` derives the first from the brief and lists the chart types whose picture actually follows a draft; `videos.ts` globs all three at bundle time, so `src/Root.tsx` discovers a new session's composition instead of naming it. |
 
 That split is the point. A ninth chart type is one file in `src/charts/`, and

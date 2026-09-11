@@ -20,7 +20,7 @@ export const Scatter: React.FC<{
   formatY?: (v: number) => string;
   marker?: 'headshot-56' | 'headshot-40' | 'logo-32';
 }> = ({ data, beats, formatX, formatY, marker = 'logo-32' }) => {
-  const { activeId, progress, active } = useBeat(beats);
+  const { activeId, progress, active, beatMs } = useBeat(beats);
   const xs = data.rows.map((r) => r.x);
   const ys = data.rows.map((r) => r.y);
   const xt = niceTicks(Math.min(...xs), Math.max(...xs), 6);
@@ -84,7 +84,7 @@ export const Scatter: React.FC<{
           return <Headshot key={r.id} src={r.headshot} x={px} y={py} size={s} ring={isActive ? T.bad : undefined} opacity={isActive ? 1 : 0.9} />;
         })}
       </Camera>
-      <AccentLayer accents={active?.accents} progress={progress} resolve={resolve} />
+      <AccentLayer accents={active?.accents} progress={progress} beatMs={beatMs} resolve={resolve} />
     </>
   );
 };
