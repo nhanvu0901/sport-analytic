@@ -23,7 +23,7 @@ import type { WriterBrief } from './brief';
 /**
  * The chart ids that genuinely support a written draft, i.e. the ones whose
  * component reads `beats` and puts each accent where the narration says it
- * goes. Today that is the cumulative family and nothing else.
+ * goes. Today that is the cumulative family plus the salary-cap column.
  *
  * A chart NOT on this list gets no composition at all. Wiring one anyway
  * would produce a video whose picture ignores its own narration — a chart
@@ -34,11 +34,55 @@ import type { WriterBrief } from './brief';
  * `Record<WiredChart, ...>`, so adding an id here without adding the
  * component is a compile error, and vice versa.
  */
-export const WIRED_CHARTS = ['cumulative-multiline', 'cumulative-record-chase'] as const;
+export const WIRED_CHARTS = [
+  'cumulative-multiline',
+  'cumulative-record-chase',
+  'stacked-column-thresholds',
+] as const;
 export type WiredChart = (typeof WIRED_CHARTS)[number];
 
 export const isWired = (chart: string): chart is WiredChart =>
   (WIRED_CHARTS as readonly string[]).includes(chart);
+
+/* ------------------------------------------ a stacked column's own vocabulary
+   The threshold lines live HERE, in the node-safe module both halves import,
+   and not in the chart: `src/brief.ts` has to publish the keys a writer may
+   name (`visual.threshold_keys`) and `src/charts/StackedColumn.tsx` has to
+   resolve them to pixels, so a list written twice is a list that drifts. */
+
+/** The five published CBA levels a payroll column is judged against. */
+export type ThresholdKey = 'cap' | 'floor' | 'tax' | 'apron1' | 'apron2';
+
+export type Thresholds = Record<ThresholdKey, number> & { season: string };
+
+/** One part of the stack — one contract. */
+export type CapRow = { id: string; name: string; last: string; value: number; headshot: string };
+
+/**
+ * The levels in the order the chart draws them, top first, with the label it
+ * prints beside each. Iterated rather than hardcoded per call site so the
+ * brief's key list, the chart's lines and the Markdown all come from one
+ * array.
+ */
+export const THRESHOLD_LINES: { key: ThresholdKey; label: string }[] = [
+  { key: 'apron2', label: '2nd Apron' },
+  { key: 'apron1', label: '1st Apron' },
+  { key: 'tax', label: 'Luxury Tax' },
+  { key: 'cap', label: 'Salary Cap' },
+  { key: 'floor', label: 'Salary Floor' },
+];
+
+/**
+ * The sixth anchorable place on this chart: the stack's OWN top.
+ *
+ * Not a CBA level — it is the sum of the parts, and the chart computes it — but
+ * it is the same kind of place: a height on the one y axis, reachable by an
+ * `Anchor.threshold`. It has to be anchorable because the sentence this chart
+ * exists for measures FROM it: "over the cap, and still 5,279,102 under the
+ * tax" is a span between the payroll's top and the tax line, and neither end
+ * of that measurement is a player.
+ */
+export const PAYROLL_KEY = 'payroll';
 
 /** One line on the chart. Same shape as `Serie` in charts/CumulativeLines. */
 export type VideoSerie = {
@@ -71,6 +115,14 @@ export type VideoData = {
   series: VideoSerie[];
   /** Present only for a record chase — one absolute mark, not a second series. */
   record?: { value: number; label: string };
+  /**
+   * A budget column's parts, biggest first, and the levels it is judged
+   * against. Present only for `stacked-column-thresholds`, and when they are
+   * present `seasons` and `series` are EMPTY: this chart has no time axis and
+   * no lines, so a season list would be an axis nothing draws.
+   */
+  rows?: CapRow[];
+  thresholds?: Thresholds;
 };
 
 /**
@@ -101,10 +153,45 @@ function axisYears(steps: string[]): string[] {
   return [...years, String(Number(years[years.length - 1]) + 1)];
 }
 
+/** ESPN's own headshot path, keyed by the athlete id the brief resolved. An
+ *  entity that only resolved through hoopR has no ESPN id and its portrait will
+ *  404 — visible, and better than a placeholder that hides which entity came
+ *  from where. */
+const headshotFor = (id: string) =>
+  `https://a.espncdn.com/i/headshots/nba/players/full/${id}.png`;
+
 export function videoDataFrom(sessionId: string, brief: WriterBrief): VideoData {
   const unit = brief.facts.unit;
   const measure = titleCase(unit);
   const record = brief.facts.record;
+  const budget = brief.facts.budget;
+
+  // A budget column is a different chart in the strict sense: its x axis is
+  // PEOPLE, not time, so none of the axis derivation below applies. Returned
+  // early rather than folded in with empty-array special cases, because the
+  // two shapes share only the four header strings.
+  if (budget) {
+    return {
+      id: sessionId,
+      chart: brief.visual.chart,
+      title: brief.topic.question,
+      sub: `${budget.subject} · ${budget.season}`,
+      yLabel: `Committed ${unit}`,
+      unit,
+      seasons: [],
+      series: [],
+      // Biggest contract first, which is the order `StackedColumn` stacks in
+      // (it reverses this to build from the floor upward) and the order the
+      // brief's own tables and `facts.budget.concentration` are in.
+      rows: [...brief.facts.entities]
+        .sort((a, b) => b.total - a.total)
+        .map((e) => ({ id: e.id, name: e.name, last: e.last, value: e.total, headshot: headshotFor(e.id) })),
+      thresholds: {
+        season: budget.season,
+        ...(Object.fromEntries(budget.lines.map((l) => [l.key, l.value])) as Record<ThresholdKey, number>),
+      },
+    };
+  }
 
   return {
     id: sessionId,
@@ -124,11 +211,7 @@ export function videoDataFrom(sessionId: string, brief: WriterBrief): VideoData 
       first: e.first,
       last: e.last,
       total: e.total,
-      // ESPN's own headshot path, keyed by the athlete id the brief resolved.
-      // An entity that only resolved through hoopR has no ESPN id and its
-      // portrait will 404 — visible, and better than inventing a placeholder
-      // that hides which entity came from where.
-      headshot: `https://a.espncdn.com/i/headshots/nba/players/full/${e.id}.png`,
+      headshot: headshotFor(e.id),
       points: e.series.map((p) => ({ season: p.step, value: p.value, ...(p.team ? { team: p.team } : {}) })),
     })),
     ...(record ? { record: { value: record.value, label: record.label } } : {}),

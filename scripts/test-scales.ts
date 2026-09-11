@@ -6,7 +6,7 @@ import teams from '../src/data/teams.json';
 import { eventDensity, DENSITY_FLOOR, DENSITY_CEILING, accentProgress, accentSpan, ACCENT_KINDS, ACCENT_LAND_MS, MIN_ACCENT_GAP } from '../src/accent';
 import { driftStats, matchAccent, parseSrt, snapDraft, spaceAccents, spanValue, stepYears, type Word } from '../src/sync';
 import { scrollOffsetAt, revealExtentAt, type ScrollStop, type Beat } from '../src/motion';
-import { detectMarkers, allowedNumbers, STYLE_RULES, assembleBrief, normaliseStep, computeAccentBudget, expressibleMarkers, EXPRESSIBLE_MARKERS, lengthTarget, narrativeUnits, FALLBACK_TARGET_SECONDS, MIN_BEATS, MAX_BEATS, WORDS_PER_BEAT, type BriefEntity, type BriefInput, type BriefRecord, type Marker, type WriterBrief } from '../src/brief';
+import { detectMarkers, allowedNumbers, STYLE_RULES, assembleBrief, normaliseStep, computeAccentBudget, expressibleMarkers, EXPRESSIBLE_MARKERS, lengthTarget, narrativeUnits, prefixTotals, FALLBACK_TARGET_SECONDS, MIN_BEATS, MAX_BEATS, WORDS_PER_BEAT, type BriefEntity, type BriefInput, type BriefRecord, type Marker, type WriterBrief } from '../src/brief';
 import { CAREER_RECORDS, namesRecord, recordChaseFor, recordFor } from '../src/records';
 import { deriveHookSeed, seasonUnion, seriesVerdict } from '../src/candidateBrief';
 import { verifyDraft, parseDraftText, WORDS_PER_SECOND, MAX_BEATS_PER_NUMBER, REPEATABLE_NUMBER_FLOOR, type Draft } from '../src/verify';
@@ -2136,15 +2136,210 @@ t('the composition id of a generated video is <session>-<chart>, unchanged for 3
     'the existing mp4, the README and out/ all carry this exact id');
 });
 
-t('only the cumulative family is wired — every other chart gets no composition', () => {
-  assert.deepEqual([...WIRED_CHARTS], ['cumulative-multiline', 'cumulative-record-chase']);
+t('three charts are wired — every other one gets no composition', () => {
+  assert.deepEqual([...WIRED_CHARTS],
+    ['cumulative-multiline', 'cumulative-record-chase', 'stacked-column-thresholds']);
   assert.ok(isWired('cumulative-multiline'));
   assert.ok(isWired('cumulative-record-chase'));
+  assert.ok(isWired('stacked-column-thresholds'));
   // These charts do not read a draft's beats. A composition for one would
   // render a picture that ignores its own narration.
   for (const chart of ['ranked-bar', 'slope-pair', 'unit-waffle', 'scatter-image', 'heatmap-matrix']) {
     assert.equal(isWired(chart), false, `${chart} must not be wired`);
   }
+});
+
+/* ------------------------------------------- a budget column, end to end ---
+   `stacked-column-thresholds` is the first wired chart that is not a line, and
+   almost everything about it is different in kind rather than in degree: its x
+   axis is people, it has no time dimension, and it is judged against five
+   fixed levels instead of one. These fixtures are the contract for all of it.
+   The numbers are Toronto's measured 2025-26 payroll, cut to four contracts so
+   the arithmetic is checkable by eye. */
+
+const CAP_LEVELS = [
+  { key: 'apron2', label: '2nd Apron', value: 207_824_000 },
+  { key: 'apron1', label: '1st Apron', value: 195_945_000 },
+  { key: 'tax', label: 'Luxury Tax', value: 187_895_000 },
+  { key: 'cap', label: 'Salary Cap', value: 154_647_000 },
+  { key: 'floor', label: 'Salary Floor', value: 139_182_300 },
+];
+
+const capBriefInput = (): BriefInput => ({
+  topic: { id: 'cap', question: 'Salary Cap Breakdown — Toronto Raptors', angle: 'hidden-cost',
+    lane: 'evergreen', hook_seed: 'Over the cap and still under the tax.' },
+  unit: 'dollars',
+  seasons: ['2025-26'],
+  entities: [
+    entity({ id: 'barnes', name: 'Scottie Barnes', first: 'Scottie', last: 'Barnes', pick: undefined,
+      total: 38_661_750, seasons_played: 1, series: [{ step: '2025-26', value: 38_661_750 }] }),
+    entity({ id: 'ingram', name: 'Brandon Ingram', first: 'Brandon', last: 'Ingram', pick: undefined,
+      total: 38_095_238, seasons_played: 1, series: [{ step: '2025-26', value: 38_095_238 }] }),
+    entity({ id: 'quickley', name: 'Immanuel Quickley', first: 'Immanuel', last: 'Quickley', pick: undefined,
+      total: 32_500_000, seasons_played: 1, series: [{ step: '2025-26', value: 32_500_000 }] }),
+    entity({ id: 'anderson', name: 'Kyle Anderson', first: 'Kyle', last: 'Anderson', pick: undefined,
+      total: 567_470, seasons_played: 1, series: [{ step: '2025-26', value: 567_470 }] }),
+  ],
+  cumulative: false,
+  budget: { subject: 'Toronto Raptors', season: '2025-26', lines: CAP_LEVELS, source: '2025-26 CBA levels' },
+});
+
+const capBrief = assembleBrief(capBriefInput());
+/** 38,661,750 + 38,095,238 + 32,500,000 + 567,470 */
+const CAP_TOTAL = 109_824_458;
+
+t('a budget with no time dimension routes to the stacked column, not to a line', () => {
+  assert.equal(capBrief.visual.chart, 'stacked-column-thresholds',
+    'partOfWhole + five thresholds + no time dim is router rule R2');
+  assert.equal(capBrief.visual.camera, 'static');
+  // One `dims` entry would have answered `cumulative-multiline` instead — the
+  // absence of the time dimension is the whole decision, so it is asserted
+  // from the other side too: the season label still travels as an anchor step.
+  assert.deepEqual(capBrief.visual.anchor_steps, ['2025-26']);
+});
+
+t('every number the budget adds to the brief is DERIVED, never supplied', () => {
+  const b = capBrief.facts.budget!;
+  assert.equal(b.total, CAP_TOTAL, 'the total is the sum of the parts, not an input');
+  assert.equal(b.lines.find((l) => l.key === 'tax')!.over, CAP_TOTAL - 187_895_000);
+  assert.equal(b.lines.find((l) => l.key === 'cap')!.over, CAP_TOTAL - 154_647_000);
+  // This fixture is four of Toronto's fourteen contracts, so it lands BELOW
+  // the floor where the real payroll is 43,433,598 above it. Negative `over`
+  // is the "under the line" direction, and asserting it here is what pins the
+  // sign convention in both directions.
+  assert.ok(b.lines.find((l) => l.key === 'floor')!.over < 0, 'under a line is a negative over');
+  assert.equal(b.lines.find((l) => l.key === 'floor')!.over, CAP_TOTAL - 139_182_300);
+  assert.deepEqual(b.concentration.map((p) => p.count), [1, 2, 3, 4]);
+  assert.equal(b.concentration[1].subtotal, 38_661_750 + 38_095_238);
+  assert.equal(Math.round(b.concentration[1].share * 100), 70);
+});
+
+t('prefixTotals is the same arithmetic for every caller, biggest part first', () => {
+  const p = prefixTotals(capBriefInput().entities);
+  assert.deepEqual(p.map((x) => x.subtotal),
+    [38_661_750, 76_756_988, 109_256_988, 109_824_458]);
+  assert.equal(p.at(-1)!.share, 1, 'the whole is the whole');
+  assert.deepEqual(prefixTotals([]), [], 'and an empty budget divides by nothing');
+});
+
+t('the writer may say every salary, the total, each level and each gap', () => {
+  const a = new Set(capBrief.facts.allowed_numbers);
+  for (const e of capBriefInput().entities) assert.ok(a.has(e.total), `${e.last}'s salary`);
+  assert.ok(a.has(CAP_TOTAL), 'the payroll itself');
+  for (const l of CAP_LEVELS) {
+    assert.ok(a.has(l.value), `the ${l.label} level`);
+    assert.ok(a.has(Math.abs(CAP_TOTAL - l.value)), `the gap to the ${l.label}`);
+  }
+  // Every grouping, not just the one the marker picked: "the top two are
+  // 76,756,988, 70% of it" has to be sayable as readily as the top three.
+  for (const p of prefixTotals(capBriefInput().entities)) {
+    assert.ok(a.has(p.subtotal), `the top-${p.count} subtotal`);
+    assert.ok(a.has(Math.round(p.share * 100)), `the top-${p.count} share`);
+  }
+});
+
+t('a budget reports no narrative units, so the length falls back', () => {
+  const b = capBrief.facts.budget!;
+  const e = capBriefInput().entities;
+  assert.equal(narrativeUnits(e, undefined, b), null,
+    'four contracts are not four things to say — a stack\'s story is in the relations');
+  // Without the budget argument the multi-entity branch would answer 4 and ask
+  // for 6 beats. That is the bug this null exists to stop: at fourteen real
+  // contracts it asks for 12 beats and 103s, past the 95s legal bound.
+  assert.equal(narrativeUnits(e), 4);
+  assert.deepEqual(capBrief.style.beats, [8, 12], 'FALLBACK_BEATS');
+  assert.equal(capBrief.style.target_seconds, FALLBACK_TARGET_SECONDS);
+  assert.equal(capBrief.style.target_words, Math.round(FALLBACK_TARGET_SECONDS * WORDS_PER_SECOND));
+});
+
+t('a chart with no camera does not offer zoom, and publishes its own lines', () => {
+  assert.deepEqual([...capBrief.visual.accent_kinds], ['refline', 'callout', 'arrow', 'spotlight', 'span'],
+    'zoom is the one kind a chart implements itself, and StackedColumn has no camera');
+  assert.deepEqual(capBrief.visual.threshold_keys,
+    ['payroll', 'apron2', 'apron1', 'tax', 'cap', 'floor'],
+    'the five levels plus the stack\'s own top, which is what a span measures from');
+  assert.deepEqual(chaseVideoBrief.visual.threshold_keys, [],
+    'a chase draws one line and names it `record`, so it publishes no keys');
+  assert.deepEqual([...chaseVideoBrief.visual.accent_kinds], [...ACCENT_KINDS]);
+});
+
+t('videoDataFrom hands the stack rows and levels, and no axis at all', () => {
+  const v = videoDataFrom('tor28cap', capBrief);
+  assert.equal(v.chart, 'stacked-column-thresholds');
+  assert.equal(compositionIdFor(v), 'tor28cap-stacked-column-thresholds');
+  assert.deepEqual(v.rows!.map((r) => r.id), ['barnes', 'ingram', 'quickley', 'anderson'],
+    'biggest first — the order StackedColumn reverses to stack from the floor');
+  assert.equal(v.rows![0].value, 38_661_750);
+  assert.equal(v.rows![0].headshot, 'https://a.espncdn.com/i/headshots/nba/players/full/barnes.png');
+  assert.equal(v.thresholds!.tax, 187_895_000);
+  assert.equal(v.thresholds!.season, '2025-26');
+  assert.deepEqual(v.seasons, [], 'no time axis');
+  assert.deepEqual(v.series, [], 'and no lines');
+  assert.equal(v.sub, 'Toronto Raptors · 2025-26');
+  // And the other direction: a chase must not grow a rows field.
+  const chase = videoDataFrom('371e3032', chaseVideoBrief);
+  assert.equal('rows' in chase, false);
+  assert.equal('thresholds' in chase, false);
+});
+
+t('verifyDraft polices threshold keys exactly as it polices anchor steps', () => {
+  // `entityId` matters here beyond the threshold: an id the brief does not
+  // carry raises its OWN accent-anchor violation, so each brief is asked with
+  // one of its own entities and the counts below measure only the threshold.
+  const draftOf = (threshold: string, entityId: string): Draft => ({
+    title: 'Cap',
+    beats: [{
+      text: 'Toronto sits over the cap and still under the tax, but the column stops short of it.',
+      entityId,
+      accents: [{ t: 0.4, kind: 'refline' as const, at: { entityId, threshold }, text: 'Luxury Tax' }],
+      ending: 'thesis' as const,
+    }],
+  });
+  const anchorFaults = (threshold: string, brief: WriterBrief, entityId: string) =>
+    verifyDraft(draftOf(threshold, entityId), brief).filter((v) => v.rule === 'accent-anchor');
+
+  assert.deepEqual(anchorFaults('tax', capBrief, 'barnes'), [], 'a key the chart draws is no violation');
+
+  const bad = anchorFaults('mid-level', capBrief, 'barnes');
+  assert.equal(bad.length, 1);
+  assert.match(bad[0].detail, /not in visual\.threshold_keys/);
+
+  // On a chart that draws no lines the same anchor resolves to null and draws
+  // nothing — a beat frozen under a draft that claims an accent.
+  const onChase = anchorFaults('tax', chaseVideoBrief, '1966');
+  assert.equal(onChase.length, 1);
+  assert.match(onChase[0].detail, /this chart draws none/);
+
+  // And a brief serialised before threshold lines existed must keep verifying
+  // exactly as it did — `?? []` in verifyDraft, asserted rather than assumed.
+  const legacy = { ...capBrief, visual: { ...capBrief.visual, threshold_keys: undefined } } as unknown as WriterBrief;
+  assert.equal(anchorFaults('tax', legacy, 'barnes').length, 1);
+});
+
+t('a span between the column\'s top and a line measures the gap the voice says', () => {
+  // The same subtraction the chart draws, done where the snap can see it:
+  // 109,824,458 against the 187,895,000 tax line.
+  const facts = { thresholds: { payroll: CAP_TOTAL, tax: 187_895_000, cap: 154_647_000 } };
+  const span = {
+    t: 0.5, kind: 'span' as const,
+    at: { entityId: 'barnes', threshold: 'payroll' },
+    to: { entityId: 'barnes', threshold: 'tax' },
+  };
+  assert.equal(spanValue(span, facts), 187_895_000 - CAP_TOTAL);
+  // Neither end is a player, so without `SyncFacts.thresholds` there is
+  // nothing to subtract and the accent keeps its authored t.
+  assert.equal(spanValue(span, {}), null);
+
+  // Written out rather than through the `w` helper: that lives with the sync
+  // fixtures further down the file and is not initialised yet at this point.
+  const words: Word[] = [
+    { text: 'Toronto', startMs: 0, endMs: 500 },
+    { text: 'stops', startMs: 500, endMs: 1000 },
+    { text: '78,070,542', startMs: 4000, endMs: 4600 },
+  ];
+  const m = matchAccent(span, words, facts);
+  assert.equal(m.rule, 'digits');
+  assert.equal(m.word?.text, '78,070,542', 'the span lands on the word that says its own number');
 });
 
 t('an empty placeholder and a missing file are the same answer to the renderer', () => {
@@ -2549,6 +2744,18 @@ t('a brief only offers markers the chosen chart can draw', () => {
   const race = expressibleMarkers(markerFixture, 'cumulative-multiline').map((m) => m.kind);
   assert.deepEqual(race, ['jump', 'missed-season'],
     'and a chart with no record line cannot draw a record gap either');
+
+  // A stack has no time axis, so every marker that is a statement about a
+  // SERIES is dropped; the two it can draw are statements about the whole.
+  const stack = expressibleMarkers(
+    [...markerFixture,
+      { entityId: 'p1', kind: 'threshold-gap', detail: '5,279,102 under the Luxury Tax', value: 5_279_102 },
+      { entityId: 'p1', kind: 'top-heavy', detail: '3 of 14 carry 60%', value: 109_256_988 },
+      { entityId: 'p1', kind: 'leader', detail: 'biggest contract on the roster: 38,661,750', value: 38_661_750 }],
+    'stacked-column-thresholds'
+  ).map((m) => m.kind);
+  assert.deepEqual(stack, ['threshold-gap', 'top-heavy', 'leader'],
+    'no jump, no plateau and no missed season on a chart where every part is one number');
 
   // A chart nobody has wired keeps every marker: silence is not a claim that
   // it can draw none of them.

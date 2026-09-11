@@ -34,6 +34,7 @@ import { pathToFileURL } from 'node:url';
 import { asDraft, narratesDraft } from '../src/drafts';
 import { asTimeline } from '../src/timeline';
 import { driftStats, parseSrt, snapDraft, type SyncFacts, type SyncReport } from '../src/sync';
+import { PAYROLL_KEY } from '../src/videoData';
 import type { Draft } from '../src/verify';
 
 const at = (...parts: string[]) => join(process.cwd(), ...parts);
@@ -105,7 +106,18 @@ export function syncDraftFiles(
   let facts: SyncFacts = {};
   if (existsSync(briefPath)) {
     const brief = JSON.parse(readFileSync(briefPath, 'utf8'));
-    facts = { entities: brief?.facts?.entities, record: brief?.facts?.record };
+    // A budget brief's reference lines, keyed as `Anchor.threshold` names
+    // them, plus the payroll's own top — which is `facts.budget.total`, the
+    // same derived sum the chart adds up. Without it a span from the stack to
+    // the tax line has nothing to subtract and cannot find its spoken number.
+    const budget = brief?.facts?.budget;
+    const thresholds = budget
+      ? {
+          [PAYROLL_KEY]: budget.total,
+          ...Object.fromEntries((budget.lines ?? []).map((l: { key: string; value: number }) => [l.key, l.value])),
+        }
+      : undefined;
+    facts = { entities: brief?.facts?.entities, record: brief?.facts?.record, thresholds };
   } else {
     log(`  (no out/brief-${id}.json — matching on the accents' own numbers only)`);
   }

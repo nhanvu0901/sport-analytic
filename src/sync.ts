@@ -48,6 +48,15 @@ export type SyncFacts = {
    *  DIFFERENCE between the two anchors' values. Without the record's own
    *  number that subtraction cannot be done. */
   record?: { holder?: string; value?: number } | null;
+  /**
+   * The named reference lines, keyed exactly as `Anchor.threshold` names them
+   * — and here for the same reason `record.value` is: a span between the
+   * payroll's own top and the tax line has no text of its own, so the only way
+   * to know which word it should land on is to do the same subtraction the
+   * chart does. `scripts/sync.ts` builds this from `brief.facts.budget`,
+   * including the derived `payroll` entry.
+   */
+  thresholds?: Record<string, number> | null;
 };
 
 /** Which of the five matching rules placed this accent. `none` kept the
@@ -202,6 +211,10 @@ export function stepYears(step: string | number): string[] {
 function valueAt(a: Accent['at'], facts: SyncFacts): number | null {
   if (!a) return null;
   if (a.record) return facts.record?.value ?? null;
+  // A fourth case, and the same kind as `record`: a height on the axis that
+  // belongs to no series. Checked before the entity for the same reason —
+  // `entityId` on a threshold anchor only says whose chart this is.
+  if (a.threshold !== undefined) return facts.thresholds?.[a.threshold] ?? null;
   const series = facts.entities?.find((e) => e.id === a.entityId)?.series;
   if (!series?.length) return null;
   if (a.step === undefined) return series[series.length - 1].value;
@@ -428,7 +441,9 @@ export function snapDraft(
         // A span's label is the number it DRAWS, which it computed rather
         // than carried — so the report shows that number, not its anchors.
         label: r.a.text ?? (spanNum !== null ? `span ${spanNum}`
-          : r.a.at?.record ? 'record line' : r.a.at?.step !== undefined
+          : r.a.at?.record ? 'record line'
+          : r.a.at?.threshold !== undefined ? `${r.a.at.threshold} line`
+          : r.a.at?.step !== undefined
           ? `${r.a.at.entityId} @ ${r.a.at.step}` : r.a.at?.entityId ?? '(no anchor)'),
         rule: r.rule,
         word: r.word?.text ?? null,

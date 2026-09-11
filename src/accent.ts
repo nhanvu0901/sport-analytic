@@ -30,6 +30,27 @@ export type Anchor = {
    * than guessing, and `verifyDraft` rejects it before that can matter.
    */
   record?: true;
+  /**
+   * Which fixed reference LINE this anchor names, on a chart that draws more
+   * than one of them.
+   *
+   * `record` above can only ever mean "the one line on this chart". A salary
+   * column has six places of that kind — the floor, the cap, the tax, the two
+   * aprons, and the payroll's own top — so a boolean cannot say which, and a
+   * boolean per line would not survive the seventh chart. A video about a team
+   * sitting under the tax has to point at the TAX line specifically, and this
+   * is the field that lets it.
+   *
+   * The vocabulary is NOT here: the brief publishes the keys it accepts as
+   * `visual.threshold_keys` (built from `THRESHOLD_LINES` and `PAYROLL_KEY` in
+   * src/videoData.ts) and `verifyDraft` checks the anchor against that list, so
+   * this module stays free of CBA words and the next chart's lines cost it
+   * nothing.
+   *
+   * `entityId` stays REQUIRED for exactly the reason it does on `record` — it
+   * says whose chart this is, and it keeps `Resolve` to one signature.
+   */
+  threshold?: string;
 };
 
 /** A closed set. The writer picks from these; anything else is a schema error. */

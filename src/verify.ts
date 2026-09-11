@@ -146,6 +146,11 @@ export function verifyDraft(draft: Draft, brief: WriterBrief, wordsPerSecond = W
   const allowed = new Set(brief.facts.allowed_numbers);
   const accentKinds = new Set(brief.visual.accent_kinds);
   const anchorSteps = new Set(brief.visual.anchor_steps);
+  /** `?? []` because a brief serialised before threshold lines existed has no
+   *  such field, and its drafts must keep verifying exactly as they did. An
+   *  empty set is also the honest answer for every chart that draws no named
+   *  lines: naming one there is a claim about a picture that has none. */
+  const thresholdKeys = new Set(brief.visual.threshold_keys ?? []);
   const endingVariants = new Set(brief.style.ending_variants);
   const entityById = new Map(brief.facts.entities.map((e) => [e.id, e]));
   /** Older briefs — and sources that never carried a team, like C01 — have no
@@ -212,6 +217,19 @@ export function verifyDraft(draft: Draft, brief: WriterBrief, wordsPerSecond = W
         out.push({
           beat: i, rule: 'accent-anchor',
           detail: `accent points at the record line (${which}.record), but this brief has no facts.record`,
+        });
+      }
+      // Same failure, one chart along: a chart that draws five lines needs the
+      // anchor to say WHICH, and a key it does not draw resolves to null,
+      // draws nothing, and leaves the beat frozen under a draft that claims an
+      // accent. Both messages name what is actually available.
+      if (a.threshold !== undefined && !thresholdKeys.has(a.threshold)) {
+        out.push({
+          beat: i, rule: 'accent-anchor',
+          detail: thresholdKeys.size
+            ? `accent ${which} threshold "${a.threshold}" is not in visual.threshold_keys `
+              + `(${[...thresholdKeys].join(', ')})`
+            : `accent ${which} points at a threshold line ("${a.threshold}"), but this chart draws none`,
         });
       }
     };

@@ -171,7 +171,10 @@ beat landing two numbers at once.
 
 ## The accents
 
-Six kinds. Nothing else is valid.
+Six kinds, and the brief's `visual.accent_kinds` says which of them THIS chart
+can draw — normally all six, but a chart with no camera does not offer `zoom`,
+because an accent a chart cannot draw is a beat that sits frozen while your
+script claims something happened. Use only what the brief lists.
 
 | kind | what it does | needs |
 |---|---|---|
@@ -279,6 +282,41 @@ The record's own value **and** the gap to it are both in `allowed_numbers`, so
 you may say them. On a chase the gap is usually the strongest number in the
 script: it is the answer to the question the title asked.
 
+### Pointing at a threshold line
+
+Other briefs are a **budget** — one total broken into people and judged against
+several fixed levels, like a team's payroll against the salary cap, the luxury
+tax and the two aprons. Those briefs carry a `facts.budget` block and a
+`visual.threshold_keys` list, and their chart is one column with those levels
+drawn across it as dashed lines.
+
+A line is not an entity and not a season, so it is named with `threshold`:
+
+```json
+{ "t": 0.55, "kind": "refline", "at": { "entityId": "4433134", "threshold": "tax" }, "text": "Luxury Tax" }
+```
+
+- `entityId` is still required, and names whose chart it is.
+- `threshold` must be one of `visual.threshold_keys`. A key that is not on that
+  list, or any threshold at all on a brief that has none, is rejected with
+  `accent-anchor`.
+- One of those keys is **the column's own top** — `payroll` on a salary brief.
+  It is not one of the published levels; it is the height the parts add up to,
+  and it exists so a `span` can measure FROM it.
+
+**On a budget chart there is nothing to draw in.** The column and every line
+are on screen from the first frame, because a contract means nothing on its own
+— it is only a story as a share of the whole — and the height of the whole
+against the lines is the entire argument. So an anchor here does not advance a
+drawing the way `at.step` does on a career chart. Your accents are the only
+movement the picture has, which makes where you put them the whole of the
+visual edit.
+
+And there is no time axis: every part is one number for one instant. The
+brief's single `anchor_steps` entry is the season the budget belongs to — a
+label you may SAY — not a step to choose between, so leave `step` off your
+anchors.
+
 ### `span` — for a gap, a deficit, a "still short by"
 
 Five of the six kinds point AT something. `span` is the one that measures
@@ -294,7 +332,10 @@ number is some distance from another: a gap to a record, a deficit, a lead, a
 
 - **Two anchors.** `at` is where the measurement starts, `to` is where it
   ends. Both take exactly the same shape as any other `at` — an entity with an
-  optional `step`, or the record line. Omit `to` and the draft is rejected
+  optional `step`, the record line, or a threshold line. On a budget chart this
+  is the strongest accent there is: a span from `payroll` to `tax` draws the
+  distance between the column's top and the tax line, which is the sentence
+  that video exists to say. Omit `to` and the draft is rejected
   with `accent-anchor`: a measurement with one end is not a measurement.
 - **Write no `text`.** The label is the distance itself, computed from the two
   anchors' own values at draw time — `23,924 − 12,095` is drawn as `11,829`
@@ -369,9 +410,10 @@ failure sends the whole script back with the violated rule named.
 - [ ] The `at.step` anchors move forward through the career, and the final
       season is not anchored before the beat that reveals the total.
 - [ ] Any `at.record` or `to.record` anchor is on a brief that has `facts.record`.
+- [ ] Every `threshold` appears in `visual.threshold_keys`.
+- [ ] Every accent kind appears in `visual.accent_kinds` for THIS brief.
 - [ ] Every `span` has both `at` and `to`, and no `text`.
 - [ ] No accent other than a `span` carries a `to`.
-- [ ] Every accent kind is one of the six.
 - [ ] Every beat has 1 to 3 accents, `t` values ≥ 0.12 apart — one on every
       beat, extras only where they earn it.
 - [ ] The accent total across the whole script sits inside

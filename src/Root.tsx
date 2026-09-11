@@ -75,21 +75,33 @@ console.log(`C01: ${cum.source} · C01F: ${full.source}`);
    so. `cumulative-record-chase` is the same component as
    `cumulative-multiline` plus one horizontal line — the record is a prop on
    the data, not a second series, because ESPN returns 5 of Wilt Chamberlain's
-   14 seasons and zero rebounds and a chase never needed the holder's series. */
+   14 seasons and zero rebounds and a chase never needed the holder's series.
+   `stacked-column-thresholds` is the same component C02 below draws, and takes
+   the same `{ rows, thresholds }` prop: `videoDataFrom` builds that pair out of
+   `brief.facts.budget`, so the generated video and the hand-built demo are one
+   shape and the component cannot tell which it is looking at. */
 const CHARTS: Record<WiredChart, React.FC<{ data: any; beats: Beat[] }>> = {
   'cumulative-multiline': CumulativeLines,
   'cumulative-record-chase': CumulativeLines,
+  'stacked-column-thresholds': StackedColumn,
 };
 
 const GENERATED = VIDEOS
   .filter((v) => v.chart in CHARTS)
   .map((video) => {
-    // Only used before a draft is written: one line per series, so the
-    // composition still has a duration and something to show.
-    const fallback = video.series.map((s) => ({
-      entityId: s.id,
-      text: `${s.name} has ${fmt.int(s.total)} career ${video.unit}.`,
-    }));
+    // Only used before a draft is written: one line per part, so the
+    // composition still has a duration and something to show. A budget column
+    // carries `rows` and no `series` — its x axis is people, not time — so the
+    // placeholder is built from whichever of the two this video has.
+    const fallback = video.rows?.length
+      ? video.rows.map((r) => ({
+          entityId: r.id,
+          text: `${r.name} carries ${fmt.moneyShort(r.value)} against the cap.`,
+        }))
+      : video.series.map((s) => ({
+          entityId: s.id,
+          text: `${s.name} has ${fmt.int(s.total)} career ${video.unit}.`,
+        }));
     return {
       video,
       Chart: CHARTS[video.chart as WiredChart],
@@ -173,7 +185,10 @@ export const RemotionRoot: React.FC = () => (
       durationInFrames={framesFor(cap.durationMs, V.FPS)}
       component={() => (
         <Frame title={salaryCap.title} sub={salaryCap.sub} logo={(salaryCap as any).team.logo}>
-          <StackedColumn rows={salaryCap.rows as any} thresholds={(salaryCap as any).thresholds} beats={cap.beats} />
+          {/* `salaryCap.json` already IS `{ rows, thresholds }` at the top
+              level, which is why the generated path could adopt this
+              component's prop shape without a second one. */}
+          <StackedColumn data={salaryCap as any} beats={cap.beats} />
         </Frame>
       )}
     />

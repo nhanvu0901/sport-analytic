@@ -10,7 +10,12 @@ import { fmt } from './scale';
 import type { CareerRecord } from './records';
 import { route, type ChartId, type DataShape } from '../router/shape';
 import { teamChanges } from './teams';
-import { ACCENT_KINDS, DENSITY_FLOOR, DENSITY_CEILING, MIN_ACCENTS_PER_BEAT, MAX_ACCENTS_PER_BEAT } from './accent';
+import { ACCENT_KINDS, DENSITY_FLOOR, DENSITY_CEILING, MIN_ACCENTS_PER_BEAT, MAX_ACCENTS_PER_BEAT, type AccentKind } from './accent';
+// Value import, and node-safe: videoData.ts has no React and no bundler magic,
+// and its own import of this module is `import type`, so the cycle is erased at
+// compile time. The threshold vocabulary lives there because the CHART and the
+// brief both need it and a list written twice is a list that drifts.
+import { PAYROLL_KEY } from './videoData';
 // A value import, and safe: verify.ts imports ONLY types from this module
 // (`import type`), so the cycle is erased at compile time and there is no
 // runtime dependency in that direction. `target_words` below must be the
@@ -21,7 +26,11 @@ import { WORDS_PER_SECOND } from './verify';
 
 export type Angle = 'verdict-revisited' | 'chase' | 'cohort-fate' | 'rank-inversion' | 'hidden-cost';
 export type Lane = 'evergreen' | 'newsy';
-export type MarkerKind = 'missed-season' | 'jump' | 'plateau' | 'rank-flip' | 'award' | 'undrafted' | 'short-career' | 'leader' | 'record-gap';
+export type MarkerKind = 'missed-season' | 'jump' | 'plateau' | 'rank-flip' | 'award' | 'undrafted' | 'short-career' | 'leader' | 'record-gap'
+  /** The payroll is this far over or under one named threshold line. */
+  | 'threshold-gap'
+  /** The smallest group of parts that carries more than half the whole. */
+  | 'top-heavy';
 export type EndingVariant = 'thesis' | 'hard-cut' | 'open-question';
 
 export type Marker = { entityId: string; kind: MarkerKind; step?: string; detail: string; value?: number };
@@ -53,6 +62,46 @@ export type BriefRecord = {
   /** Provenance, carried verbatim from src/records.ts. */
   source: string;
   as_of: string;
+};
+
+/**
+ * A budget decomposed into people and judged against fixed reference lines —
+ * the salary-cap shape, and the thing that turns the chart into
+ * `stacked-column-thresholds`.
+ *
+ * The parallel with `BriefRecord` above is deliberate, and so is the one
+ * difference. Both carry "an absolute number the charted values are measured
+ * against" as a scalar rather than as a second entity, for the same reason: the
+ * line is not a series. But a chase has ONE such line and a payroll has five
+ * published levels plus the stack's own top, so this carries a keyed LIST and
+ * an accent names which one it means (`Anchor.threshold`).
+ *
+ * `total`, every `over` and the whole `concentration` table are DERIVED in
+ * `assembleBrief` from the charted entities. Nothing here may be supplied: the
+ * gap to the tax line is the number this video is about, and a number a caller
+ * typed is a number nobody checked.
+ */
+export type BudgetInput = {
+  /** Whose budget — "Toronto Raptors". Display only; it is the chart's `sub`. */
+  subject: string;
+  /** The season these levels belong to — "2025-26". */
+  season: string;
+  /** The published levels, in the order the chart draws them (highest first). */
+  lines: { key: string; label: string; value: number }[];
+  /** Provenance. This is the one set of numbers on the chart that did not come
+   *  from a data source, so it travels with the brief. */
+  source: string;
+};
+
+// `Omit<..., 'lines'>`, not a plain intersection: intersecting two array types
+// makes `lines[0].over` unreachable rather than adding the field.
+export type BriefBudget = Omit<BudgetInput, 'lines'> & {
+  /** The sum of every charted entity's own figure. Derived. */
+  total: number;
+  /** `over` is `total - value`: positive means the budget is ABOVE the line. */
+  lines: { key: string; label: string; value: number; over: number }[];
+  /** Running subtotals, biggest part first — see `prefixTotals`. */
+  concentration: { count: number; subtotal: number; share: number }[];
 };
 
 export type BriefEntity = {
@@ -100,8 +149,14 @@ export type WriterBrief = {
   topic: { id: string; question: string; angle: Angle; lane: Lane; hook_seed: string; why_fans_argue?: string; evidence?: string[] };
   visual: {
     chart: string; alternates: string[]; camera: string;
-    accent_kinds: readonly string[];                  // = ACCENT_KINDS
+    /** The kinds THIS chart can actually draw — normally = ACCENT_KINDS, but a
+     *  chart with no camera drops `zoom` rather than offering a kind whose
+     *  accent would be a frozen beat the draft claims is accented. */
+    accent_kinds: readonly string[];
     anchor_steps: string[];                           // valid Anchor.step values = the season labels
+    /** Valid `Anchor.threshold` values. Empty on a chart with no named lines,
+     *  which is what makes a threshold anchor on one a rejectable claim. */
+    threshold_keys: string[];
     density: { floor: number; ceiling: number; target: number };
     accent_budget: AccentBudget;
   };
@@ -110,6 +165,9 @@ export type WriterBrief = {
     /** Present only for a record chase: the single absolute line the chart
      *  draws and the script argues against. See BriefRecord. */
     record?: BriefRecord;
+    /** Present only for a budget column: the whole, and the fixed levels it is
+     *  judged against. See BriefBudget. */
+    budget?: BriefBudget;
   };
   style: {
     voice: string; rules: string[];
@@ -146,12 +204,72 @@ const median = (xs: number[]): number => {
 };
 
 /**
+ * Running subtotals of the parts, biggest first: "the top k contracts are this
+ * much, which is this share of the whole".
+ *
+ * One function because three callers need the same arithmetic and must not
+ * disagree about it — `allowedNumbers` (so every subtotal and share a script
+ * might legitimately say is sayable), `detectMarkers` (the `top-heavy`
+ * marker), and `briefMd` (the table the writer reads). `share` is a fraction,
+ * not a percentage: rounding happens once, where it is printed.
+ */
+export function prefixTotals(entities: BriefEntity[]): { count: number; subtotal: number; share: number }[] {
+  const sorted = [...entities].sort((a, b) => b.total - a.total);
+  const whole = sorted.reduce((s, e) => s + e.total, 0);
+  let acc = 0;
+  return sorted.map((e, i) => {
+    acc += e.total;
+    return { count: i + 1, subtotal: acc, share: whole > 0 ? acc / whole : 0 };
+  });
+}
+
+/**
  * Story markers, detected from shape alone — never chosen by the writer.
  * Deterministic and pure so it can be unit-tested against synthetic data.
  */
-export function detectMarkers(entities: BriefEntity[], seasons: string[], record?: BriefRecord): Marker[] {
+export function detectMarkers(
+  entities: BriefEntity[],
+  seasons: string[],
+  record?: BriefRecord,
+  budget?: BriefBudget
+): Marker[] {
   const out: Marker[] = [];
   const sortedSeasons = [...seasons].sort((a, b) => seasonKey(a) - seasonKey(b));
+
+  // A budget's story is not in any one part, it is in the whole against the
+  // lines and in how unevenly the parts are sized. Both are detected from the
+  // numbers alone, and both are attached to the entity whose segment sits at
+  // the TOP of the stack — which is literally where the total is drawn, and
+  // which keeps `Marker.entityId` required for every kind.
+  if (budget) {
+    const topId = [...entities].sort((a, b) => b.total - a.total)[0]?.id;
+    if (topId) {
+      // Thousands separators here and nowhere else in this function, because
+      // these are the only markers whose numbers are MONEY: nine digits
+      // unbroken is unreadable, and the brief's own "How to write money" rule
+      // asks the script for the separated spelling — a marker that models the
+      // other one is a marker that invites a rejected number.
+      for (const l of budget.lines) {
+        out.push({
+          entityId: topId, kind: 'threshold-gap', value: Math.abs(l.over),
+          detail: `${fmt.int(budget.total)} is ${fmt.int(Math.abs(l.over))} `
+            + `${l.over > 0 ? 'OVER' : 'UNDER'} the ${l.label} (${fmt.int(l.value)})`,
+        });
+      }
+      // The smallest group carrying more than half the budget. Half, and not
+      // "the top four", because half is a property of the data and four is a
+      // number somebody liked: every other grouping the script might want is
+      // in the brief's own concentration table and in allowed_numbers.
+      const half = budget.concentration.find((p) => p.share > 0.5);
+      if (half) {
+        out.push({
+          entityId: topId, kind: 'top-heavy', value: half.subtotal,
+          detail: `${half.count} of ${entities.length} contracts carry ${fmt.int(half.subtotal)} `
+            + `of ${fmt.int(budget.total)} — ${Math.round(half.share * 100)}% of the payroll`,
+        });
+      }
+    }
+  }
 
   for (const e of entities) {
     // Rank 1 of 1 is not a fact about anybody. A one-series brief used to
@@ -160,7 +278,13 @@ export function detectMarkers(entities: BriefEntity[], seasons: string[], record
     // only turn into a false claim, since there is no class and he leads
     // nothing. With two or more entities the ordering is real and it fires.
     if (e.rank === 1 && entities.length > 1) {
-      out.push({ entityId: e.id, kind: 'leader', detail: `most in the class: ${e.total}`, value: e.total });
+      out.push({
+        entityId: e.id, kind: 'leader', value: e.total,
+        // "Most in the class" is a claim about a draft cohort and there is no
+        // cohort on a payroll column — the same rank means the biggest single
+        // contract on one roster.
+        detail: budget ? `biggest contract on the roster: ${fmt.int(e.total)}` : `most in the class: ${e.total}`,
+      });
     }
     // The chase itself, stated as a marker so it reaches the writer through
     // the same channel as every other story beat — with both numbers it will
@@ -237,7 +361,7 @@ export function detectMarkers(entities: BriefEntity[], seasons: string[], record
  * detection is untouched — another chart (a timeline row, an award grid) may
  * want awards later, and deleting the detector would be the wrong fix.
  *
- * Keyed by `ChartId` so a typo does not compile. Only the two WIRED charts
+ * Keyed by `ChartId` so a typo does not compile. Only the WIRED charts
  * (see `src/videoData.ts`) declare a set; every other chart is unfiltered,
  * which is the honest default — nothing is claimed about a chart nobody has
  * wired a composition for yet.
@@ -253,10 +377,21 @@ export function detectMarkers(entities: BriefEntity[], seasons: string[], record
  *                  chart has no record line to measure against
  *   award          nothing on this chart changes when a trophy is won
  *   undrafted      there is no draft axis, no pick, nothing to point at
+ *
+ * And what a payroll column can show:
+ *   leader         the tallest segment in the stack — drawn
+ *   threshold-gap  the distance from the stack's top to a named line — drawn,
+ *                  as a span between two anchorable places
+ *   top-heavy      how much of the column the top segments occupy — drawn,
+ *                  because it IS the column's proportions
+ * Everything else needs a time axis this chart does not have: a jump, a
+ * plateau, a missed season and a short career are all statements about a
+ * series, and every part of this chart is one number.
  */
 export const EXPRESSIBLE_MARKERS: Partial<Record<ChartId, readonly MarkerKind[]>> = {
   'cumulative-multiline': ['missed-season', 'jump', 'plateau', 'short-career', 'leader', 'rank-flip'],
   'cumulative-record-chase': ['missed-season', 'jump', 'plateau', 'short-career', 'leader', 'record-gap'],
+  'stacked-column-thresholds': ['leader', 'threshold-gap', 'top-heavy'],
 };
 
 /** The markers this chart can express, in the order they were detected. A
@@ -297,7 +432,12 @@ export function yearsIn(label: string): number[] {
 }
 
 /** Every number a script is allowed to say — nothing else survives verify.ts. */
-export function allowedNumbers(entities: BriefEntity[], seasons: string[], record?: BriefRecord): number[] {
+export function allowedNumbers(
+  entities: BriefEntity[],
+  seasons: string[],
+  record?: BriefRecord,
+  budget?: BriefBudget
+): number[] {
   const nums = new Set<number>();
   for (let i = 1; i <= 12; i++) nums.add(i);
   for (const s of seasons) for (const y of yearsIn(s)) nums.add(y);
@@ -310,6 +450,26 @@ export function allowedNumbers(entities: BriefEntity[], seasons: string[], recor
     nums.add(record.value);
     nums.add(record.seasons);
     for (const g of record.gap) nums.add(Math.abs(g.short));
+  }
+
+  // A budget column's headline numbers are the whole, the levels, and the
+  // distance between them — the sentence this chart exists for is "over the
+  // cap by X and still under the tax by Y", and a script that may not say X or
+  // Y cannot state it. The concentration table goes in for the same reason the
+  // record's season count does: "four contracts are 136,962,345 of it, 75% of
+  // the payroll" is the second half of the story, and neither 136,962,345 nor
+  // 75 is derivable from any other number on the list.
+  if (budget) {
+    nums.add(budget.total);
+    for (const l of budget.lines) {
+      nums.add(l.value);
+      nums.add(Math.abs(l.over));
+    }
+    for (const p of prefixTotals(entities)) {
+      nums.add(p.subtotal);
+      nums.add(Math.round(p.share * 100));
+    }
+    for (const y of yearsIn(budget.season)) nums.add(y);
   }
 
   for (const e of entities) {
@@ -372,7 +532,24 @@ export const STYLE_RULES: string[] = [
  * Null means neither shape — a lone entity with no record to chase. The
  * caller keeps the old constant for that case; see `lengthTarget`.
  */
-export function narrativeUnits(entities: BriefEntity[], record?: BriefRecord): number | null {
+export function narrativeUnits(
+  entities: BriefEntity[],
+  record?: BriefRecord,
+  budget?: BriefBudget
+): number | null {
+  // A budget column reports NO units, and that is a measurement, not a gap.
+  //
+  // The multi-entity branch below would answer 14 for the Toronto payroll —
+  // 12 beats after the clamp, 300 words, 103s, past the 95s legal bound — and
+  // every one of the last ten beats would be a minimum contract with nothing
+  // to say. The reason is the rule in TODO.md that also decides this chart's
+  // reveal: a stack's information lives in the RELATIONS between its parts,
+  // not in the parts. "One beat per line on the chart" is right for a race
+  // because each line is a thing the script must account for; here the script
+  // accounts for the WHOLE against five fixed levels, and nothing in the data
+  // says how many of those relations are worth a sentence. So this declines to
+  // answer and the fallback below stands — see `lengthTarget`.
+  if (budget) return null;
   if (record && entities.length === 1) {
     const eras = teamChanges(entities[0].series).length + 1;
     return eras + 1;
@@ -423,8 +600,12 @@ export type LengthTarget = {
  * and multiplied to get words, so the word count was an answer to a question
  * nobody had asked about this video's content.
  */
-export function lengthTarget(entities: BriefEntity[], record?: BriefRecord): LengthTarget {
-  const units = narrativeUnits(entities, record);
+export function lengthTarget(
+  entities: BriefEntity[],
+  record?: BriefRecord,
+  budget?: BriefBudget
+): LengthTarget {
+  const units = narrativeUnits(entities, record, budget);
   if (units === null) {
     return {
       units,
@@ -528,7 +709,34 @@ export type BriefInput = {
    *  scale, adds the threshold the router routes on, and puts the record and
    *  the gap on the writer's allowed-numbers list. */
   record?: CareerRecord;
+  /** The fixed levels this budget is judged against. Supplying it is what
+   *  turns the chart into `stacked-column-thresholds`: it declares the shape
+   *  part-of-whole with no time dimension, which is the only thing the router
+   *  routes on. Mutually exclusive with `record` in practice — a chase is a
+   *  series against one line, a budget is one instant against several. */
+  budget?: BudgetInput;
 };
+
+/**
+ * One `Anchor`, as JSON Schema. `additionalProperties: false` means a field the
+ * schema does not name is simply not writable, so every way of anchoring has to
+ * be declared here or the writer cannot use it at all — which is why `record`
+ * and now `threshold` appear. `threshold` is declared only when the brief has
+ * lines to name, so a chase's schema cannot offer one.
+ */
+function anchorSchema(thresholdKeys: string[]): unknown {
+  return {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      entityId: { type: 'string' },
+      step: { type: 'string' },
+      record: { type: 'boolean', enum: [true] },
+      ...(thresholdKeys.length ? { threshold: { type: 'string', enum: thresholdKeys } } : {}),
+    },
+    required: ['entityId'],
+  };
+}
 
 export function assembleBrief(input: BriefInput): WriterBrief {
   // One season-step format from here on, regardless of what either caller
@@ -565,27 +773,77 @@ export function assembleBrief(input: BriefInput): WriterBrief {
     as_of: input.record.asOf,
   };
 
-  const allowed_numbers = allowedNumbers(entities, seasons, record);
+  // Same rule as the record: every derived number lands here and nowhere else,
+  // so the `over` the markers quote, the gap `allowedNumbers` permits and the
+  // distance the chart's span measures are all one arithmetic.
+  const budget: BriefBudget | undefined = input.budget && (() => {
+    const total = entities.reduce((s, e) => s + e.total, 0);
+    return {
+      ...input.budget!,
+      total,
+      lines: input.budget!.lines.map((l) => ({ ...l, over: total - l.value })),
+      concentration: prefixTotals(entities),
+    };
+  })();
 
-  const shape: DataShape = {
-    entities: entities.length,
-    entityKind: 'player',
-    measures: [{ name: input.unit, type: 'count' }],
-    dims: [{ name: 'season', type: 'time', steps: seasons.length }],
-    cumulative: input.cumulative,
-    // One reference line, and the reason the router can tell a record chase
-    // from an ordinary cumulative race without being told the topic.
-    thresholds: record ? 1 : 0,
-    imageKey: 'headshot',
-  };
+  const allowed_numbers = allowedNumbers(entities, seasons, record, budget);
+
+  const shape: DataShape = budget
+    ? {
+        entities: entities.length,
+        entityKind: 'player',
+        measures: [{ name: input.unit, type: 'money' }],
+        // NO time dimension, and that absence is load-bearing: R2 in
+        // router/shape.ts is `partOfWhole && thresholds > 0 && !timeDim`, so
+        // one `dims` entry here would route a payroll to a cumulative line.
+        // A payroll column is one instant — `anchor_steps` still carries the
+        // single season label it is an instant OF, which is a fact the script
+        // may say, not an axis anything draws.
+        dims: [],
+        partOfWhole: true,
+        thresholds: budget.lines.length,
+        imageKey: 'headshot',
+      }
+    : {
+        entities: entities.length,
+        entityKind: 'player',
+        measures: [{ name: input.unit, type: 'count' }],
+        dims: [{ name: 'season', type: 'time', steps: seasons.length }],
+        cumulative: input.cumulative,
+        // One reference line, and the reason the router can tell a record chase
+        // from an ordinary cumulative race without being told the topic.
+        thresholds: record ? 1 : 0,
+        imageKey: 'headshot',
+      };
   const choice = route(shape);
+
+  /**
+   * The accent kinds THIS chart can draw — not the closed set, which is what
+   * the writer could draw on SOME chart.
+   *
+   * `zoom` is the only kind a chart implements itself (it moves the camera,
+   * and only the chart has the scales), and `StackedColumn` has no camera: the
+   * router answers `camera: 'static'` for a budget column because a push-in on
+   * one segment hides the threshold lines, and the lines are the argument. An
+   * unimplemented kind does not fail — it silently draws nothing, which is a
+   * beat that is frozen on screen while the draft says it is accented. So it
+   * is not offered.
+   */
+  const accent_kinds: readonly AccentKind[] = budget
+    ? ACCENT_KINDS.filter((k) => k !== 'zoom')
+    : ACCENT_KINDS;
+
+  /** The lines an `Anchor.threshold` may name: the supplied levels, plus the
+   *  stack's own top, which the chart derives. Empty for every other chart,
+   *  and that emptiness is what makes a threshold anchor on one rejectable. */
+  const threshold_keys = budget ? [PAYROLL_KEY, ...budget.lines.map((l) => l.key)] : [];
 
   // Detected from the data, then filtered to what THIS chart can draw. The
   // order matters: the chart choice is what the filter is against, so the
   // markers cannot be assembled before the router has answered. See
   // EXPRESSIBLE_MARKERS for why a brief that offers an unshowable marker is a
   // brief that invites unshowable narration.
-  const markers = expressibleMarkers(detectMarkers(entities, seasons, record), choice.chart);
+  const markers = expressibleMarkers(detectMarkers(entities, seasons, record, budget), choice.chart);
 
   const exampleEntity = entities[0];
   const exampleStep = exampleEntity.series.at(-1)?.step;
@@ -600,7 +858,7 @@ export function assembleBrief(input: BriefInput): WriterBrief {
   // 70s forced a story that finished at 47s to spend 30 more seconds saying
   // numbers it had already said. See `lengthTarget`.
   const durationS: [number, number] = [40, 95];
-  const { beats: beatsRange, target_words: targetWords, target_seconds: targetSeconds } = lengthTarget(entities, record);
+  const { beats: beatsRange, target_words: targetWords, target_seconds: targetSeconds } = lengthTarget(entities, record, budget);
   const accentBudget = computeAccentBudget(targetSeconds, beatsRange);
 
   return {
@@ -619,14 +877,16 @@ export function assembleBrief(input: BriefInput): WriterBrief {
       chart: choice.chart,
       alternates: choice.alternates,
       camera: choice.camera,
-      accent_kinds: ACCENT_KINDS,
+      accent_kinds,
       anchor_steps: seasons,
+      threshold_keys,
       density: { floor: DENSITY_FLOOR, ceiling: DENSITY_CEILING, target: 0.30 },
       accent_budget: accentBudget,
     },
     facts: {
       unit: input.unit,
       record,
+      budget,
       // "as of" is a CALENDAR YEAR, not a season label: buildBrief's original
       // dataset carried its own bare-year axis (data.seasons, ending "2026"
       // for the 2025-26 season) separately from the season-label steps
@@ -657,6 +917,7 @@ export function assembleBrief(input: BriefInput): WriterBrief {
         'any entityId not in facts.entities[].id',
         'any accent kind not in visual.accent_kinds',
         'any Anchor.step not in visual.anchor_steps',
+        'any Anchor.threshold not in visual.threshold_keys',
         'pixel coordinates of any kind',
         'more than 3 accents in one beat',
         'a running accent total outside visual.accent_budget',
@@ -691,34 +952,15 @@ export function assembleBrief(input: BriefInput): WriterBrief {
                     required: ['t', 'kind'],
                     properties: {
                       t: { type: 'number', minimum: 0, maximum: 1 },
-                      kind: { type: 'string', enum: ACCENT_KINDS },
-                      at: {
-                        type: 'object',
-                        additionalProperties: false,
-                        properties: {
-                          entityId: { type: 'string' },
-                          step: { type: 'string' },
-                          // `additionalProperties: false` means an anchor
-                          // shape the schema does not name is simply not
-                          // writable, so the record anchor has to be declared
-                          // here or the writer cannot point at the line at all.
-                          record: { type: 'boolean', enum: [true] },
-                        },
-                        required: ['entityId'],
-                      },
+                      // This brief's own kinds, not the closed set: a chart
+                      // with no camera does not offer `zoom`, and a schema
+                      // that offered it anyway would invite a frozen beat.
+                      kind: { type: 'string', enum: accent_kinds },
+                      at: anchorSchema(threshold_keys),
                       // The second anchor, and for the same reason `record`
-                      // is declared above: a `span` is unwritable unless the
-                      // schema names the field it measures to.
-                      to: {
-                        type: 'object',
-                        additionalProperties: false,
-                        properties: {
-                          entityId: { type: 'string' },
-                          step: { type: 'string' },
-                          record: { type: 'boolean', enum: [true] },
-                        },
-                        required: ['entityId'],
-                      },
+                      // is declared in there: a `span` is unwritable unless
+                      // the schema names the field it measures to.
+                      to: anchorSchema(threshold_keys),
                       // Never on a span: that label is computed from the two
                       // anchors' own values, and an authored one is rejected.
                       text: { type: 'string' },
@@ -731,19 +973,54 @@ export function assembleBrief(input: BriefInput): WriterBrief {
           },
         },
       },
-      example: {
-        title: input.topic.question,
-        beats: [
-          {
-            text: `${exampleEntity.first} ${exampleEntity.last} leads the 2019 class, but the number one pick is not even second.`,
-            entityId: exampleEntity.id,
-            accents: [
-              { t: 0.3, kind: 'spotlight', at: { entityId: exampleEntity.id, step: exampleStep } },
-              { t: 0.7, kind: 'callout', at: { entityId: exampleEntity.id }, text: String(exampleEntity.total) },
+      // The example is shaped for THIS brief, and that is not cosmetic: a
+      // writer copies it. The cumulative one below names the 2019 draft class,
+      // and on a payroll brief "2019" is not in `allowed_numbers` — so the
+      // example itself would be a draft the verifier rejects.
+      example: budget
+        ? (() => {
+            // The line the whole is CLOSEST to — always present, and the one
+            // most worth pointing at, rather than a key typed in here that a
+            // future budget might not have.
+            const nearest = [...budget.lines].sort((a, b) => Math.abs(a.over) - Math.abs(b.over))[0];
+            return {
+              title: input.topic.question,
+              beats: [
+                {
+                  // Separators, because the Markdown's own "How to write
+                  // money" rule asks for them and the example is the thing a
+                  // writer copies. `fmt.int` is the same spelling `fmt.money`
+                  // prints on the chart, minus the dollar sign the voice does
+                  // not say.
+                  text: `${exampleEntity.first} ${exampleEntity.last} is the biggest number on the sheet at `
+                    + `${fmt.int(exampleEntity.total)}, and the column reaches ${fmt.int(budget.total)} in total, `
+                    + `which leaves it ${fmt.int(Math.abs(nearest.over))} from the ${nearest.label}.`,
+                  entityId: exampleEntity.id,
+                  accents: [
+                    { t: 0.3, kind: 'spotlight', at: { entityId: exampleEntity.id } },
+                    {
+                      t: 0.72, kind: 'span',
+                      at: { entityId: exampleEntity.id, threshold: PAYROLL_KEY },
+                      to: { entityId: exampleEntity.id, threshold: nearest.key },
+                    },
+                  ],
+                },
+              ],
+            };
+          })()
+        : {
+            title: input.topic.question,
+            beats: [
+              {
+                text: `${exampleEntity.first} ${exampleEntity.last} leads the 2019 class, but the number one pick is not even second.`,
+                entityId: exampleEntity.id,
+                accents: [
+                  { t: 0.3, kind: 'spotlight', at: { entityId: exampleEntity.id, step: exampleStep } },
+                  { t: 0.7, kind: 'callout', at: { entityId: exampleEntity.id }, text: String(exampleEntity.total) },
+                ],
+              },
             ],
           },
-        ],
-      },
     },
   };
 }
