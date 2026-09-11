@@ -43,7 +43,11 @@ export type BeatSpan = { startMs: number; endMs: number };
  */
 export type SyncFacts = {
   entities?: { id: string; first?: string; last?: string; series?: { step: string | number; value: number }[] }[];
-  record?: { holder?: string } | null;
+  /** `value` is here for the same reason `series` is above: a `span` anchored
+   *  at the record line has no text of its own, and its match target is the
+   *  DIFFERENCE between the two anchors' values. Without the record's own
+   *  number that subtraction cannot be done. */
+  record?: { holder?: string; value?: number } | null;
 };
 
 /** Which of the five matching rules placed this accent. `none` kept the
@@ -187,6 +191,43 @@ export function stepYears(step: string | number): string[] {
   return d ? [d] : [];
 }
 
+/**
+ * The value one anchor stands on — a point on a series, or the record line.
+ *
+ * Same three cases the charts' own `Resolve` handles, in value space instead
+ * of pixel space: `record: true` is the record's number, a `step` is that
+ * season's cumulative value, and no `step` at all means the series' final
+ * point (what the head arrives at).
+ */
+function valueAt(a: Accent['at'], facts: SyncFacts): number | null {
+  if (!a) return null;
+  if (a.record) return facts.record?.value ?? null;
+  const series = facts.entities?.find((e) => e.id === a.entityId)?.series;
+  if (!series?.length) return null;
+  if (a.step === undefined) return series[series.length - 1].value;
+  const hit = series.find((p) => String(p.step) === String(a.step));
+  return hit ? hit.value : null;
+}
+
+/**
+ * A span's own number: the distance between its two anchors, derived exactly
+ * as the chart derives the label it draws.
+ *
+ * This is what makes a span snappable at all. Every other accent is matched
+ * on digits it carries in `text`, and a span carries none by design — its
+ * label is computed so that it cannot be a number the writer invented. The
+ * same computation here gives the snap the word to look for: a span from
+ * LeBron's line head to Wilt's record reads 11,829, and "11,829" is the word
+ * the voice says.
+ */
+export function spanValue(accent: Accent, facts: SyncFacts): number | null {
+  if (accent.kind !== 'span') return null;
+  const from = valueAt(accent.at, facts);
+  const to = valueAt(accent.to, facts);
+  if (from === null || to === null) return null;
+  return Math.abs(from - to);
+}
+
 const surnameOf = (full?: string | null) => {
   const parts = (full ?? '').trim().split(/\s+/).filter(Boolean);
   return parts.length ? parts[parts.length - 1] : '';
@@ -197,7 +238,9 @@ const surnameOf = (full?: string | null) => {
  * ordered by how precisely each one names the THING THE ACCENT POINTS AT:
  *
  *   1. digits in the accent's own text — the strongest signal, because the
- *      label and the spoken word are then literally the same number.
+ *      label and the spoken word are then literally the same number. A
+ *      `span` has no text and uses its COMPUTED number here instead, which
+ *      is the same signal arrived at by subtraction rather than by reading.
  *   2. `at.step` — the year that season is spoken as. A `spotlight` on
  *      `{entityId, step}` is about THAT POINT, and the year names the point.
  *   3. `at.record` — the record holder's surname, else a word saying "record".
@@ -226,7 +269,11 @@ export function matchAccent(
     return { rule, word: all.find((w) => !claimed.has(w)) ?? all[0] };
   };
 
-  const num = numberIn(accent.text ?? '');
+  // A span has no text to read a number out of — its number is derived from
+  // the two anchors, and that derived number is the word to match on, which
+  // keeps every accent kind on the one digits-first rule.
+  const span = spanValue(accent, facts);
+  const num = numberIn(accent.text ?? '') || (span === null ? '' : String(span));
   if (num) {
     const byDigits = pick('digits', (w) => digitsOf(w.text) === num);
     if (byDigits) return byDigits;
@@ -370,6 +417,7 @@ export function snapDraft(
     const nextAccents = rows.map((r, k) => ({ ...r.a, t: spaced.ts[k] }));
 
     rows.forEach((r, k) => {
+      const spanNum = spanValue(r.a, facts);
       const authoredFire = span.startMs + r.a.t * beatMs;
       const snappedFire = span.startMs + spaced.ts[k] * beatMs;
       const spoken = r.word ? r.word.startMs : null;
@@ -377,7 +425,10 @@ export function snapDraft(
       const snappedLanded = span.startMs + Math.min(1, spaced.ts[k] + accentSpan(beatMs, landMs)) * beatMs;
       accents.push({
         beat: i, accent: k, kind: r.a.kind,
-        label: r.a.text ?? (r.a.at?.record ? 'record line' : r.a.at?.step !== undefined
+        // A span's label is the number it DRAWS, which it computed rather
+        // than carried — so the report shows that number, not its anchors.
+        label: r.a.text ?? (spanNum !== null ? `span ${spanNum}`
+          : r.a.at?.record ? 'record line' : r.a.at?.step !== undefined
           ? `${r.a.at.entityId} @ ${r.a.at.step}` : r.a.at?.entityId ?? '(no anchor)'),
         rule: r.rule,
         word: r.word?.text ?? null,

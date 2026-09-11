@@ -393,8 +393,79 @@ const One: React.FC<{ accent: Accent; p: number; resolve: Resolve }> = ({ accent
     );
   }
 
-  // zoom and fade are handled by the chart (camera / series opacity), not drawn
+  // zoom, fade and span are handled by the chart — the camera, the series
+  // opacity, and (for a span) a measurement only the chart's own scales and
+  // values can make. See `SpanBracket` below.
   return null;
+};
+
+/**
+ * A `span`: the distance between two anchors, drawn as a measured bracket.
+ *
+ * It exists because the narration kept making claims the picture had no way
+ * to draw. On out/draft-371e3032.json the writer wrote "trails by 11,829" as
+ * an ARROW whose text said `11,829 short` — a label that writes the
+ * sentence's own words next to a line instead of showing the gap. A bracket
+ * between the line's head and the record line shows it: two arms, the
+ * distance between them, and the number that distance is.
+ *
+ * Drawn here but driven by the chart, because only the chart knows where the
+ * two anchors are AND what values they stand on. `label` is passed in already
+ * computed for exactly that reason — this component cannot invent a number
+ * and is not given the chance to.
+ *
+ * The idiom is the theme's existing threshold/annotation voice, not a new
+ * one: `capLine` at `annotation.width`, the same stroke the record line and
+ * `refline` use, with the number on the theme's `plate` so it stays readable
+ * over the grid.
+ */
+export const SpanBracket: React.FC<{
+  from: { x: number; y: number };
+  to: { x: number; y: number };
+  /** Derived from the data by the chart. Never authored — see verify.ts. */
+  label: string;
+  /** `accentProgress` for this accent, 0..1. */
+  p: number;
+}> = ({ from, to, label, p }) => {
+  const ARM = 26;
+  // One x for the whole measurement — a bracket is a ruler, and a ruler is
+  // straight. Placed left of the rightmost anchor so it clears the head
+  // marker and the record's own right-hand label, and clamped into the plot
+  // so a span between two early seasons cannot walk off the axis.
+  const stem = Math.max(
+    PLOT.x + 60,
+    Math.min(PLOT.x + PLOT.w - 40, Math.max(from.x, to.x) - 56)
+  );
+  // Grows from `at` toward `to`: the measurement is made, not revealed.
+  const yEnd = from.y + (to.y - from.y) * p;
+  // The label rides just INSIDE the travelling end rather than sitting at the
+  // bracket's midpoint. Measured on the 371e3032 frame at 54.5s: the midpoint
+  // of a head-to-record span lands exactly on the portrait's face, and a
+  // number across somebody's eyes reads as a censor bar. The far end of a
+  // chase's gap is the emptiest part of the plot — that is what a chase IS.
+  const labelY = yEnd + (yEnd <= from.y ? 58 : -58);
+  const stroke = TH.annotation.width;
+  return (
+    <>
+      <svg style={{ position: 'absolute', left: 0, top: 0, overflow: 'visible' }} width={V.W} height={V.H}>
+        <line x1={stem} y1={from.y} x2={stem} y2={yEnd} stroke={T.capLine} strokeWidth={stroke}
+          strokeDasharray={TH.annotation.voice === 'marker' ? '24 16' : undefined} strokeLinecap="butt" />
+        <line x1={stem - ARM} y1={from.y} x2={stem + ARM} y2={from.y} stroke={T.capLine} strokeWidth={stroke} />
+        {/* the far arm lands only when the bracket has actually reached it */}
+        {p > 0.9 && (
+          <line x1={stem - ARM} y1={to.y} x2={stem + ARM} y2={to.y} stroke={T.capLine} strokeWidth={stroke} />
+        )}
+      </svg>
+      <div
+        style={{
+          position: 'absolute', left: 0, top: labelY, width: Math.max(0, stem - ARM - 12),
+          textAlign: 'right', opacity: p, transform: 'translateY(-50%)', whiteSpace: 'nowrap',
+        }}
+      >
+        <span style={{ ...type.marker, color: T.ink, background: TH.plate, padding: '2px 10px' }}>{label}</span>
+      </div>
+    </>
+  );
 };
 
 /* ---------------------------------------------------------------- 5 spotlight
@@ -465,6 +536,36 @@ export const Headshot: React.FC<{
     }}
   >
     <SafeImg src={src} style={{ width: '100%', height: '100%', objectFit: 'cover', objectPosition: 'top center' }} />
+  </div>
+);
+
+/**
+ * A team's logo sitting ON the line, at the season a career changed team.
+ *
+ * Three of these tell LeBron James's career arc — Miami in 2010-11, Cleveland
+ * in 2014-15, Los Angeles in 2018-19 — without the stroke ever changing
+ * colour, which is the trade this makes on purpose: a line that changes
+ * colour mid-career is harder to follow, and following one line against a
+ * record is the whole job of this chart.
+ *
+ * The plate is the theme's `logoPlate` and is not decoration: team logos are
+ * authored for white, and several of them are near-invisible directly on a
+ * #101319 ground. `SafeImg` is what keeps a 404 from cancelling the render.
+ */
+export const TeamBead: React.FC<{
+  src: string; x: number; y: number; size: number; opacity?: number;
+}> = ({ src, x, y, size, opacity = 1 }) => (
+  <div
+    style={{
+      position: 'absolute', left: x - size / 2, top: y - size / 2, width: size, height: size,
+      opacity, borderRadius: '50%', overflow: 'hidden',
+      background: TH.logoPlate ?? TH.ground,
+      border: `2px solid ${TH.hairline}`,
+      boxShadow: '0 2px 8px rgba(0,0,0,.45)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+    }}
+  >
+    <SafeImg src={src} style={{ width: '74%', height: '74%', objectFit: 'contain' }} />
   </div>
 );
 

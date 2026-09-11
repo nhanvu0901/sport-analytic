@@ -104,6 +104,51 @@ export function seasonRows(
   return out.sort((a, b) => a.season.localeCompare(b.season));
 }
 
+/**
+ * Which team each season was played for, from the same rows `seasonRows`
+ * reads — `teamSlug` is already in the response, so this costs no request.
+ *
+ * A SEPARATE function rather than another field on `SeasonRow`, because the
+ * two answer different questions: `seasonRows` is the measure being charted
+ * and is summed, rolled up and weighted; a team is a label and none of those
+ * operations mean anything on it. Keeping them apart also leaves every
+ * existing caller of `seasonRows` untouched.
+ *
+ * A traded season has one row per team plus ESPN's "Totals" roll-up, whose
+ * `teamSlug` is "2024-25 Totals" and names no team. The season is credited to
+ * the team the player played the MOST games for, ties going to the later row
+ * — the team they finished the season with.
+ */
+export function seasonTeams(stats: any, category: 'totals' | 'averages'): { season: string; team: string }[] {
+  const cat = stats?.categories?.find((c: any) => c.name === category);
+  if (!cat) return [];
+  const gpIdx = cat.labels?.indexOf('GP') ?? -1;
+
+  const groups = new Map<string, any[]>();
+  for (const s of cat.statistics ?? []) {
+    const season = s.season?.displayName;
+    const slug = String(s.teamSlug ?? '');
+    if (!season || !slug || slug.includes('Totals')) continue;
+    const list = groups.get(season);
+    if (list) list.push(s);
+    else groups.set(season, [s]);
+  }
+
+  const out: { season: string; team: string }[] = [];
+  for (const [season, rows] of groups) {
+    let best = rows[0];
+    if (rows.length > 1 && gpIdx >= 0) {
+      for (const r of rows) {
+        const gp = Number(String(r.stats[gpIdx]).replace(/,/g, ''));
+        const bestGp = Number(String(best.stats[gpIdx]).replace(/,/g, ''));
+        if (Number.isFinite(gp) && (!Number.isFinite(bestGp) || gp >= bestGp)) best = r;
+      }
+    }
+    out.push({ season, team: String(best.teamSlug) });
+  }
+  return out.sort((a, b) => a.season.localeCompare(b.season));
+}
+
 export function cumulate(rows: { season: string; value: number }[]) {
   let acc = 0;
   return rows.map((r) => ({ ...r, value: (acc += r.value) }));

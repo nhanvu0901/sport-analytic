@@ -1,12 +1,12 @@
 /** Plain assertions, no framework. `npm test`. */
 import assert from 'node:assert/strict';
-import { seasonRows, cumulate } from '../src/espn';
+import { seasonRows, seasonTeams, cumulate } from '../src/espn';
 import { scaleLinear, niceTicks, fitRows, binGrid, countRadius, ensureContrast, contrastRatio, pathAt, arcFractions, easeOut, rankPair, gridFit, waffleLayout, thinLabels, type Pt } from '../src/scale';
 import teams from '../src/data/teams.json';
 import { eventDensity, DENSITY_FLOOR, DENSITY_CEILING, accentProgress, accentSpan, ACCENT_KINDS, ACCENT_LAND_MS, MIN_ACCENT_GAP } from '../src/accent';
-import { driftStats, matchAccent, parseSrt, snapDraft, spaceAccents, stepYears, type Word } from '../src/sync';
+import { driftStats, matchAccent, parseSrt, snapDraft, spaceAccents, spanValue, stepYears, type Word } from '../src/sync';
 import { scrollOffsetAt, revealExtentAt, type ScrollStop, type Beat } from '../src/motion';
-import { detectMarkers, allowedNumbers, STYLE_RULES, assembleBrief, normaliseStep, computeAccentBudget, type BriefEntity, type BriefInput, type BriefRecord, type Marker, type WriterBrief } from '../src/brief';
+import { detectMarkers, allowedNumbers, STYLE_RULES, assembleBrief, normaliseStep, computeAccentBudget, expressibleMarkers, EXPRESSIBLE_MARKERS, type BriefEntity, type BriefInput, type BriefRecord, type Marker, type WriterBrief } from '../src/brief';
 import { CAREER_RECORDS, namesRecord, recordChaseFor, recordFor } from '../src/records';
 import { deriveHookSeed, seasonUnion, seriesVerdict } from '../src/candidateBrief';
 import { verifyDraft, parseDraftText, WORDS_PER_SECOND, type Draft } from '../src/verify';
@@ -16,6 +16,7 @@ import { draftToScriptLines } from '../src/scripts';
 import { asDraft, narratesDraft, separatorExample } from '../src/drafts';
 import { asTimeline } from '../src/timeline';
 import { compositionIdFor, isWired, videoDataFrom, WIRED_CHARTS } from '../src/videoData';
+import { teamBySlug, teamChanges, teamSlug } from '../src/teams';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -524,7 +525,7 @@ t('an accent snapped to the last word of a beat still lands', () => {
 });
 
 t('the accent kinds are a closed set the writer picks from', () => {
-  assert.deepEqual(ACCENT_KINDS, ['zoom', 'refline', 'callout', 'arrow', 'spotlight']);
+  assert.deepEqual(ACCENT_KINDS, ['zoom', 'refline', 'callout', 'arrow', 'spotlight', 'span']);
 });
 
 /* ---------------------------------------------------------------- brief.ts */
@@ -2119,6 +2120,263 @@ t('revealExtentAt ignores an arriveMs belonging to another series', () => {
   assert.equal(revealExtentAt(mixed, 'b', 1100, stepAt), 1, 'b arrives on its word');
   assert.ok(Math.abs(revealExtentAt(mixed, 'a', 680, stepAt) - 1) < 1e-9, 'a keeps its own ramp');
 });
+
+
+/* --------------------------------------------------- accent.ts / verify.ts:
+   the `span` — an accent about the DISTANCE between two anchors.
+
+   It exists because seven of the nine beats of out/draft-371e3032.json made a
+   claim the picture could not draw, and two of them gave the game away by
+   writing the relation into an arrow's TEXT ("11,829 short", "14 seasons").
+   A label is not a measurement. These pin the three properties that make a
+   span different from every other accent: two anchors, a computed number, and
+   no authored text. */
+
+const spanBrief = {
+  ...miniBrief,
+  facts: { ...miniBrief.facts, record: chaseRecord },
+} as unknown as WriterBrief;
+
+const spanBeat = (accents: any[]) => ({
+  title: 't',
+  beats: [{
+    text: 'Alpha One sits at 100, but the record is still 50 clear.', entityId: 'p1',
+    accents, ending: 'thesis' as const,
+  }],
+});
+
+t('verifyDraft accepts a span with two resolvable anchors', () => {
+  // `beat-count` is dropped throughout this block: miniBrief pins a 2-beat
+  // script and these fixtures are one beat, which is not what they test.
+  const v = verifyDraft(spanBeat([
+    { t: 0.4, kind: 'span' as const, at: { entityId: 'p1' }, to: { entityId: 'p1', record: true as const } },
+  ]), spanBrief).filter((x) => x.rule !== 'beat-count');
+  assert.deepEqual(v, [], `a legal span must pass cleanly, got ${JSON.stringify(v)}`);
+});
+
+t('verifyDraft rejects a span whose second anchor is missing or unresolvable', () => {
+  const missing = verifyDraft(spanBeat([{ t: 0.4, kind: 'span' as const, at: { entityId: 'p1' } }]), spanBrief)
+    .filter((v) => v.rule === 'accent-anchor');
+  assert.equal(missing.length, 1, 'a span with no `to` measures nothing');
+  assert.ok(missing[0].detail.includes('no to'), missing[0].detail);
+
+  // Unresolvable the three ways an `at` can be: unknown entity, unknown step,
+  // and the record line on a brief that has no record.
+  const unknownEntity = verifyDraft(spanBeat([
+    { t: 0.4, kind: 'span' as const, at: { entityId: 'p1' }, to: { entityId: 'ghost' } },
+  ]), spanBrief).filter((v) => v.rule === 'accent-anchor');
+  assert.equal(unknownEntity.length, 1);
+  assert.ok(unknownEntity[0].detail.includes('to points at unknown entityId'), unknownEntity[0].detail);
+
+  const unknownStep = verifyDraft(spanBeat([
+    { t: 0.4, kind: 'span' as const, at: { entityId: 'p1' }, to: { entityId: 'p1', step: '1996-97' } },
+  ]), spanBrief).filter((v) => v.rule === 'accent-anchor');
+  assert.equal(unknownStep.length, 1);
+  assert.ok(unknownStep[0].detail.includes('1996-97'), unknownStep[0].detail);
+
+  // Same rule that already guards `at.record`, now reachable through `to`:
+  // miniBrief has no facts.record, so the chart would resolve nothing.
+  const noRecord = verifyDraft(spanBeat([
+    { t: 0.4, kind: 'span' as const, at: { entityId: 'p1' }, to: { entityId: 'p1', record: true as const } },
+  ]), miniBrief).filter((v) => v.rule === 'accent-anchor');
+  assert.equal(noRecord.length, 1);
+  assert.ok(noRecord[0].detail.includes('to.record'), noRecord[0].detail);
+});
+
+t('verifyDraft rejects an authored label on a span, because the number is computed', () => {
+  const v = verifyDraft(spanBeat([
+    { t: 0.4, kind: 'span' as const, at: { entityId: 'p1' }, to: { entityId: 'p1', record: true as const }, text: '11,829' },
+  ]), spanBrief).filter((x) => x.rule !== 'beat-count');
+  assert.equal(v.length, 1, JSON.stringify(v));
+  assert.equal(v[0].rule, 'accent-text');
+  assert.ok(v[0].detail.includes('computed'), v[0].detail);
+});
+
+t('verifyDraft rejects a second anchor on any kind that is not a span', () => {
+  const v = verifyDraft(spanBeat([
+    { t: 0.4, kind: 'arrow' as const, at: { entityId: 'p1' }, to: { entityId: 'p1' }, text: 'up' },
+  ]), spanBrief).filter((x) => x.rule === 'accent-anchor');
+  assert.equal(v.length, 1);
+  assert.ok(v[0].detail.includes('only a span'), v[0].detail);
+});
+
+/* ------------------------------- sync.ts: a span snaps on its OWN number ---
+   Every other accent is matched on digits it carries in `text`. A span
+   carries none by design, so the snap derives the same number the chart
+   draws and matches the word that says it. Without this a span would be the
+   one accent that could not land on its word. */
+
+const SPAN_FACTS = {
+  entities: [{
+    id: 'lbj', first: 'LeBron', last: 'James',
+    series: [{ step: '2024-25', value: 11_829 }, { step: '2025-26', value: 12_095 }],
+  }],
+  record: { holder: 'Wilt Chamberlain', value: 23_924 },
+};
+const SPAN_WORDS = [w('He', 0, 400), w('still', 400, 800), w('trails', 800, 1200),
+                    w('Chamberlain', 1200, 1800), w('by', 1800, 2100),
+                    w('11,829', 4000, 4600), w('rebounds.', 4600, 5000)];
+const headToRecord = { t: 0.5, kind: 'span' as const, at: { entityId: 'lbj' }, to: { entityId: 'lbj', record: true as const } };
+
+t('spanValue is the gap between the two anchors — 23,924 − 12,095', () => {
+  assert.equal(spanValue(headToRecord, SPAN_FACTS), 11_829);
+  // a step-less anchor is the series' final point, the same reading the chart
+  // gives it; two steps measure between those two points
+  assert.equal(spanValue({ ...headToRecord, at: { entityId: 'lbj', step: '2024-25' }, to: { entityId: 'lbj', step: '2025-26' } }, SPAN_FACTS), 266);
+  // and nothing is invented when an anchor resolves to no value at all
+  assert.equal(spanValue(headToRecord, { entities: SPAN_FACTS.entities, record: { holder: 'Wilt Chamberlain' } }), null);
+  assert.equal(spanValue({ ...headToRecord, to: { entityId: 'ghost' } }, SPAN_FACTS), null);
+  assert.equal(spanValue({ t: 0.5, kind: 'callout' as const, at: { entityId: 'lbj' }, text: '12,095' }, SPAN_FACTS), null,
+    'only a span has a span number');
+});
+
+t('matchAccent lands a span on the word that says its computed number', () => {
+  const m = matchAccent(headToRecord, SPAN_WORDS, SPAN_FACTS);
+  assert.equal(m.rule, 'digits', 'the derived number is matched by the same digits-first rule as an authored one');
+  assert.equal(m.word?.text, '11,829');
+  // With no record value there is no number to derive. The span then falls
+  // through every remaining rule — its own anchor names no year and no
+  // surname the voice said — and keeps its authored t rather than being
+  // placed on a word that means something else.
+  const noValue = matchAccent(headToRecord, SPAN_WORDS, { entities: SPAN_FACTS.entities, record: { holder: 'Wilt Chamberlain' } });
+  assert.equal(noValue.rule, 'none');
+  assert.equal(noValue.word, null);
+});
+
+t('snapDraft finishes a span’s ease-in as its number is spoken, and reports that number', () => {
+  const draft: Draft = {
+    title: 'gap',
+    beats: [{ text: 'He still trails Chamberlain by 11,829 rebounds.', entityId: 'lbj', accents: [headToRecord] }],
+  };
+  const r = snapDraft(draft, [{ startMs: 0, endMs: 10_000 }], SPAN_WORDS, SPAN_FACTS);
+  const fire = r.draft.beats[0].accents![0].t * 10_000;
+  assert.ok(Math.abs(fire - (4000 - ACCENT_LAND_MS)) < 1, `the span fired at ${fire}`);
+  assert.equal(r.report.accents[0].rule, 'digits');
+  assert.equal(r.report.accents[0].label, 'span 11829', 'the report shows the number the bracket draws');
+  assert.equal(r.report.accents[0].snappedDriftMs, -ACCENT_LAND_MS);
+});
+
+/* ------------------------------------ brief.ts: markers a chart can DRAW ---
+   detectMarkers answers "what is interesting in this data". That is not the
+   same question as "what can this picture show", and the difference is
+   measurable: the 371e3032 brief carried 42 award markers for a rebounds
+   chart, and two of the nine beats it produced talked about MVPs and
+   championships — claims the chart has no means to answer. */
+
+const markerFixture: Marker[] = [
+  { entityId: 'p1', kind: 'award', detail: 'Most Valuable Player (2013)', step: '2012-13' },
+  { entityId: 'p1', kind: 'undrafted', detail: 'went undrafted' },
+  { entityId: 'p1', kind: 'jump', detail: '900 in 2013-14, 2.1x their usual', step: '2013-14' },
+  { entityId: 'p1', kind: 'missed-season', detail: 'no games in 2014-15', step: '2014-15' },
+  { entityId: 'p1', kind: 'record-gap', detail: '11829 rebounds short', value: 11_829 },
+];
+
+t('a brief only offers markers the chosen chart can draw', () => {
+  const chase = expressibleMarkers(markerFixture, 'cumulative-record-chase').map((m) => m.kind);
+  assert.deepEqual(chase, ['jump', 'missed-season', 'record-gap'],
+    'no award and no draft position on a chart that draws neither');
+
+  const race = expressibleMarkers(markerFixture, 'cumulative-multiline').map((m) => m.kind);
+  assert.deepEqual(race, ['jump', 'missed-season'],
+    'and a chart with no record line cannot draw a record gap either');
+
+  // A chart nobody has wired keeps every marker: silence is not a claim that
+  // it can draw none of them.
+  assert.equal(expressibleMarkers(markerFixture, 'ranked-bar').length, markerFixture.length);
+  assert.deepEqual(Object.keys(EXPRESSIBLE_MARKERS).sort(), [...WIRED_CHARTS].sort(),
+    'only the wired charts declare a set');
+});
+
+t('assembleBrief filters the markers it detected, so 42 awards never reach the writer', () => {
+  const awards = Array.from({ length: 4 }, (_, k) => ({ name: 'Most Valuable Player', season: `201${k}-1${k + 1}` }));
+  const b = assembleBrief({
+    topic: { id: 'chase', question: 'Can he catch it?', angle: 'chase', lane: 'evergreen', hook_seed: 'x' },
+    unit: 'rebounds',
+    seasons: ['2003-04', '2004-05', '2005-06'],
+    entities: [entity({ id: '1966', name: 'LeBron James', first: 'LeBron', last: 'James', total: 1576, seasons_played: 3,
+      series: [{ step: '2003-04', value: 432 }, { step: '2004-05', value: 1020 }, { step: '2005-06', value: 1576 }],
+      awards })],
+    cumulative: true, record: recordFor('REB')!,
+  });
+  assert.equal(b.visual.chart, 'cumulative-record-chase');
+  assert.equal(b.facts.markers.filter((m) => m.kind === 'award').length, 0,
+    'the chart has no way to show an award, so the brief does not offer one');
+  assert.ok(b.facts.markers.some((m) => m.kind === 'record-gap'), 'and the gap it CAN draw survives');
+  // The detector itself is untouched — another chart may want awards later.
+  assert.equal(detectMarkers(b.facts.entities, b.visual.anchor_steps, b.facts.record)
+    .filter((m) => m.kind === 'award').length, 4);
+});
+
+/* ------------------------------------------- espn.ts / teams.ts: the career
+   changed team three times and the picture said so nowhere.
+
+   The per-season team is already in the response `seasonRows` reads, so it
+   costs nothing; a per-season PHOTO exists at no reachable URL, so the jersey
+   in the portrait cannot change. Marks on the line at the seasons it changed,
+   and a portrait ring in the current team's colour, are what the data we do
+   have can honestly draw. */
+
+const traded = {
+  categories: [{
+    name: 'totals', labels: ['GP', 'REB'],
+    statistics: [
+      { season: { displayName: '2024-25' }, teamSlug: 'brooklyn-nets', stats: ['33', '300'] },
+      { season: { displayName: '2024-25' }, teamSlug: 'la-clippers', stats: ['18', '150'] },
+      { season: { displayName: '2024-25' }, teamSlug: '2024-25 Totals', stats: ['51', '450'] },
+      { season: { displayName: '2025-26' }, teamSlug: 'la-clippers', stats: ['70', '700'] },
+    ],
+  }],
+};
+
+t('seasonTeams credits a traded season to the team with the most games, never to the roll-up row', () => {
+  assert.deepEqual(seasonTeams(traded, 'totals'), [
+    { season: '2024-25', team: 'brooklyn-nets' },
+    { season: '2025-26', team: 'la-clippers' },
+  ]);
+  assert.deepEqual(seasonTeams(traded, 'averages'), [], 'and an absent category is no teams, not a crash');
+  // The values it reads alongside are unchanged — two separate questions.
+  assert.deepEqual(seasonRows(traded, 'totals', 'REB').map((r) => r.value), [450, 700]);
+});
+
+t('teamBySlug resolves ESPN’s own slugs, and an unknown one degrades to null', () => {
+  assert.equal(teamSlug('Los Angeles Lakers'), 'los-angeles-lakers');
+  assert.equal(teamSlug('LA Clippers'), 'la-clippers');
+  assert.equal(teamSlug('Philadelphia 76ers'), 'philadelphia-76ers');
+  assert.equal(teamBySlug('cleveland-cavaliers')?.abbr, 'CLE');
+  assert.equal(teamBySlug('miami-heat')?.abbr, 'MIA');
+  assert.equal(teamBySlug('los-angeles-lakers')?.logo, 'https://a.espncdn.com/i/teamlogos/nba/500/lal.png');
+  assert.equal(teamBySlug('seattle-supersonics'), null);
+  assert.equal(teamBySlug(undefined), null);
+});
+
+t('teamChanges marks the seasons a career TURNS, not every season it has', () => {
+  // LeBron James, 23 seasons: Cleveland, Miami from 2010-11, Cleveland again
+  // from 2014-15, Los Angeles from 2018-19. Three marks, not twenty-three.
+  const career = [
+    ...Array.from({ length: 7 }, () => ({ team: 'cleveland-cavaliers' })),
+    ...Array.from({ length: 4 }, () => ({ team: 'miami-heat' })),
+    ...Array.from({ length: 4 }, () => ({ team: 'cleveland-cavaliers' })),
+    ...Array.from({ length: 8 }, () => ({ team: 'los-angeles-lakers' })),
+  ];
+  assert.equal(career.length, 23);
+  assert.deepEqual(teamChanges(career), [7, 11, 15]);
+  assert.deepEqual(teamChanges([{ team: 'miami-heat' }]), [], 'one team is no turns');
+  assert.deepEqual(teamChanges([{}, {}]), [], 'and a series with no team data is no turns either');
+});
+
+t('every team colour survives this ground — the ring is readable or it is not a ring', () => {
+  const ground = '#101319';
+  for (const slug of ['cleveland-cavaliers', 'miami-heat', 'los-angeles-lakers', 'san-antonio-spurs', 'brooklyn-nets']) {
+    const raw = teamBySlug(slug)!.color;
+    const lifted = ensureContrast(raw, ground);
+    assert.ok(contrastRatio(lifted, ground) >= 2.6,
+      `${slug}: ${raw} -> ${lifted} is still ${contrastRatio(lifted, ground).toFixed(2)}:1 on the ground`);
+  }
+  // Cleveland's wine and Miami's red genuinely need it — this is not a no-op.
+  assert.ok(contrastRatio(teamBySlug('cleveland-cavaliers')!.color, ground) < 2.6);
+  assert.ok(contrastRatio(teamBySlug('miami-heat')!.color, ground) < 2.6);
+});
+
 
 console.log(`\n${n} assertions passed.`);
 

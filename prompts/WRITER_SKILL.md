@@ -147,7 +147,7 @@ need it: the flip, the payoff, a beat landing two numbers at once.
 
 ## The accents
 
-Five kinds. Nothing else is valid.
+Six kinds. Nothing else is valid.
 
 | kind | what it does | needs |
 |---|---|---|
@@ -156,9 +156,10 @@ Five kinds. Nothing else is valid.
 | `callout` | a number or short phrase appears at a point | `at`, `text` |
 | `refline` | dashed line across the chart at that point's level | `at`, `text` |
 | `arrow` | dashed arrow points in at a point | `at`, `text` |
+| `span` | measures the distance between two points and draws it as a bracket, labelled with that distance | `at`, `to`, **never** `text` |
 
-On a record chase, `refline` and `arrow` can be anchored at the record line
-instead of at a point — see **Pointing at the record line** below.
+On a record chase, `refline`, `arrow` and `span` can be anchored at the record
+line instead of at a point — see **Pointing at the record line** below.
 
 `at` is an **anchor in data space**: `{ "entityId": "...", "step": "..." }`.
 
@@ -216,12 +217,46 @@ The record is **not** an entity, so it has no `entityId` of its own and no
 - `record: true` means "the record line", whatever value it sits at.
 - Only valid when the brief actually has `facts.record`. On any other brief it
   is rejected with `accent-anchor`.
-- `refline` and `arrow` are the two kinds that read well on it. A `callout` on
-  the line duplicates the label the chart already draws there.
+- `refline` and `arrow` are the two kinds that read well ON it, and `span` is
+  the kind that reads well AGAINST it — a bracket from the player's line up to
+  the record draws the gap instead of describing it. A `callout` on the line
+  duplicates the label the chart already draws there.
 
 The record's own value **and** the gap to it are both in `allowed_numbers`, so
 you may say them. On a chase the gap is usually the strongest number in the
 script: it is the answer to the question the title asked.
+
+### `span` — for a gap, a deficit, a "still short by"
+
+Five of the six kinds point AT something. `span` is the one that measures
+BETWEEN two things, and it is the right tool every time a sentence says one
+number is some distance from another: a gap to a record, a deficit, a lead, a
+"still short by", "nearly his whole career again".
+
+```json
+{ "t": 0.7, "kind": "span",
+  "at": { "entityId": "1966" },
+  "to": { "entityId": "1966", "record": true } }
+```
+
+- **Two anchors.** `at` is where the measurement starts, `to` is where it
+  ends. Both take exactly the same shape as any other `at` — an entity with an
+  optional `step`, or the record line. Omit `to` and the draft is rejected
+  with `accent-anchor`: a measurement with one end is not a measurement.
+- **Write no `text`.** The label is the distance itself, computed from the two
+  anchors' own values at draw time — `23,924 − 12,095` is drawn as `11,829`
+  because the chart subtracted it, not because anybody typed it. A `text` on a
+  span is rejected with `accent-text`. This is the point of the kind: a
+  number that was measured cannot be a number that was invented.
+- **It is not an arrow with a caption.** Writing `{"kind": "arrow", "text":
+  "11,829 short"}` puts your sentence's own words next to a line. It does not
+  show the gap; the viewer has to take your word for it. A span draws the two
+  ends and the distance between them, which is the picture the sentence is
+  asking for.
+
+Put the span on the beat that SAYS the gap, at the moment the number is
+spoken. Its own computed number is what gets matched to your sentence, so a
+beat whose span measures 11,829 should be a beat that says 11,829.
 
 `t` is a fraction of that beat, `0` to `1` — when the accent fires inside the
 sentence. Put a `callout` carrying a number at the moment the voice says it.
@@ -244,7 +279,8 @@ Only this JSON. No commentary before or after it, no markdown fence.
       "entityId": "an id from facts.entities",
       "accents": [
         { "t": 0.28, "kind": "spotlight", "at": { "entityId": "..." } },
-        { "t": 0.66, "kind": "callout", "at": { "entityId": "...", "step": "2025-26" }, "text": "8,391" }
+        { "t": 0.66, "kind": "callout", "at": { "entityId": "...", "step": "2025-26" }, "text": "8,391" },
+        { "t": 0.88, "kind": "span", "at": { "entityId": "..." }, "to": { "entityId": "...", "record": true } }
       ]
     }
   ]
@@ -275,8 +311,10 @@ failure sends the whole script back with the violated rule named.
 - [ ] Every `at.step` appears in `visual.anchor_steps`.
 - [ ] The `at.step` anchors move forward through the career, and the final
       season is not anchored before the beat that reveals the total.
-- [ ] Any `at.record` anchor is on a brief that has `facts.record`.
-- [ ] Every accent kind is one of the five.
+- [ ] Any `at.record` or `to.record` anchor is on a brief that has `facts.record`.
+- [ ] Every `span` has both `at` and `to`, and no `text`.
+- [ ] No accent other than a `span` carries a `to`.
+- [ ] Every accent kind is one of the six.
 - [ ] Every beat has 1 to 3 accents, `t` values ≥ 0.12 apart — one on every
       beat, extras only where they earn it.
 - [ ] The accent total across the whole script sits inside
@@ -295,10 +333,18 @@ do.
 
 **Use the markers.** The brief's `facts.markers` are the story the numbers are
 hiding — a season missed entirely, a scoring jump 2.5× a player's usual, a
-plateau, an award, an undrafted player who outlasted lottery picks. A script
-that recites totals in order is a table read aloud. A script built on the
-markers has something to say. If a marker never appears in your script, ask
-yourself why you left it out.
+plateau, how far short of a record somebody still is. A script that recites
+totals in order is a table read aloud. A script built on the markers has
+something to say. If a marker never appears in your script, ask yourself why
+you left it out.
+
+The markers you are given are also the markers this chart can DRAW. They are
+filtered for it: a rebounds chart is not told about MVP awards, because
+nothing on it changes when a trophy is won. **Write about what is in the
+brief.** A sentence about a championship, an award, or a draft position on a
+chart that carries none of them is a sentence the picture has to sit out —
+and a picture that cannot answer the voice is the one flaw this whole format
+cannot hide.
 
 **Order for tension, not for rank.** Counting down from first to last spends
 the surprise immediately. Set up an expectation, let two or three beats build

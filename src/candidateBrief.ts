@@ -9,7 +9,7 @@
  */
 import type { Candidate } from './content/types';
 import { inferMeasure } from './content/gates';
-import { api, cumulate, findAthleteId, seasonRows, type SeasonRow } from './espn';
+import { api, cumulate, findAthleteId, seasonRows, seasonTeams, type SeasonRow } from './espn';
 import { careerPoints } from './hoopr';
 import { assembleBrief, detectMarkers, normaliseStep, type Angle, type BriefEntity, type BriefInput, type Marker, type WriterBrief } from './brief';
 import { recordChaseFor, type CareerRecord } from './records';
@@ -185,6 +185,10 @@ export async function briefFromCandidate(
       const stats = await api.athleteStats(r.id!);
       const rows: SeasonRow[] = seasonRows(stats, measure.category!, measure.espnLabel!);
       const series = cumulativeMeasure ? cumulate(rows) : rows;
+      // Which team each of those seasons was played for. Same response, no
+      // extra request — and the only way the chart can mark the seasons a
+      // career changed team, since it never fetches anything itself.
+      const teamOf = new Map(seasonTeams(stats, measure.category!).map((t) => [t.season, t.team]));
 
       // An empty or flat-zero series for THIS measure is not real data —
       // ESPN's pre-1980s totals rows can be silently missing a whole column
@@ -225,7 +229,10 @@ export async function briefFromCandidate(
         total: series.at(-1)?.value ?? 0,
         rank: 0, // assembleBrief recomputes the real rank from `total`
         seasons_played: rows.length,
-        series: series.map((p) => ({ step: normaliseStep(p.season), value: p.value })),
+        series: series.map((p) => {
+          const team = teamOf.get(p.season);
+          return { step: normaliseStep(p.season), value: p.value, ...(team ? { team } : {}) };
+        }),
         awards,
       });
       log(`  ${r.name}: ${rows.length} seasons of ${measure.espnLabel}`);

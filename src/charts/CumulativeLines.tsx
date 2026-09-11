@@ -2,13 +2,19 @@ import React from 'react';
 import { interpolate } from 'remotion';
 import { PLOT, T, TH, V, series as PALETTE, type } from '../theme';
 import { scaleLinear, niceTicks, fmt, ensureContrast, pathAt, easeOut, arcFractions, thinLabels, type Pt } from '../scale';
-import type { Anchor, Resolve } from '../accent';
+import { accentProgress, type Anchor, type Resolve } from '../accent';
+import { teamBySlug, teamChanges } from '../teams';
 import { PlotFrame } from '../chrome/PlotFrame';
-import { AccentLayer, Camera, PortraitLabel, Headshot, revealState, revealExtentAt, useBeat, type Beat, type CameraStop } from '../motion';
+import { AccentLayer, Camera, PortraitLabel, Headshot, SpanBracket, TeamBead, revealState, revealExtentAt, useBeat, type Beat, type CameraStop } from '../motion';
 
 export type Serie = {
   id: string; name: string; first: string; last: string; total: number;
-  headshot: string; points: { season: string; value: number }[];
+  /**
+   * `team` is ESPN's per-season `teamSlug`, carried here through the brief
+   * and `video-<id>.json`. Optional, and absent for the hand-built datasets:
+   * a series without it simply gets no transition marks.
+   */
+  headshot: string; points: { season: string; value: number; team?: string }[];
 };
 
 /**
@@ -78,7 +84,8 @@ export const CumulativeLines: React.FC<{
    * because whether the line is moving is no longer a property of this frame's
    * beat.
    */
-  const drawn = (s: Serie) => pathAt(pointsOf(s), revealExtentAt(beats, s.id, ms, stepFractionOf(s)));
+  const extentOf = (s: Serie) => revealExtentAt(beats, s.id, ms, stepFractionOf(s));
+  const drawn = (s: Serie) => pathAt(pointsOf(s), extentOf(s));
 
   /**
    * The record line, in frame pixels — or null when there is no record.
@@ -121,6 +128,31 @@ export const CumulativeLines: React.FC<{
     const idx = s.points.findIndex((p) => p.season.slice(0, 4) === key);
     const at = idx >= 0 ? pts[idx + 1] : pts[pts.length - 1];
     return at ? { x: PLOT.x + at[0], y: PLOT.y + at[1] } : null;
+  };
+
+  /**
+   * The VALUE an anchor stands on — the same three cases as `resolve`, in
+   * data space instead of pixel space.
+   *
+   * Only a `span` needs this, and it is what makes a span's label impossible
+   * to fake: the number drawn between two anchors is `23,924 - 12,095`
+   * computed here, not a string somebody typed. `src/sync.ts` runs the same
+   * subtraction over the brief's own series so the snap can match that number
+   * to the spoken word.
+   *
+   * A step-less anchor is the series' final point, matching `resolveStatic`'s
+   * reading of the same anchor — while the line is still being drawn the
+   * bracket's arm rides the animating head, so the two agree exactly once the
+   * head has arrived, which is when a gap beat is spoken.
+   */
+  const valueOf = (a: Anchor): number | null => {
+    if (a.record) return data.record?.value ?? null;
+    const s = data.series.find((v) => v.id === a.entityId);
+    if (!s) return null;
+    if (a.step === undefined) return s.points.at(-1)?.value ?? s.total;
+    const key = String(a.step).slice(0, 4);
+    const p = s.points.find((q) => q.season.slice(0, 4) === key);
+    return p ? p.value : null;
   };
 
   // `zoom` accents are the only kind the accent layer does not draw: they move
@@ -208,14 +240,50 @@ export const CumulativeLines: React.FC<{
         </div>
       )}
 
+      {/* Team changes, marked ON the line at the season they happen.
+          The stroke keeps one colour — a line that changes colour mid-career
+          is harder to follow, and this chart exists to be followed against a
+          record. Three small logos say the same thing without costing that.
+          A mark appears only once the line has been drawn past its own
+          season, so it arrives with the line rather than waiting on it. */}
+      {data.series.map((s) => {
+        const st = revealState(s.id, revealed, activeId);
+        if (!st.shown) return null;
+        const pts = pointsOf(s);
+        const fr = arcFractions(pts);
+        const extent = extentOf(s);
+        return teamChanges(s.points).map((idx) => {
+          const mark = teamBySlug(s.points[idx].team);
+          const at = pts[idx + 1];
+          if (!mark || !at) return null;
+          const arrived = easeOut(Math.min(1, Math.max(0, (extent - fr[idx + 1]) / 0.012)));
+          if (arrived <= 0) return null;
+          return (
+            <TeamBead
+              key={`${s.id}-${s.points[idx].season}`}
+              src={mark.logo} x={PLOT.x + at[0]} y={PLOT.y + at[1]} size={54}
+              opacity={arrived * (st.active ? 1 : TH.line.fade + 0.2)}
+            />
+          );
+        });
+      })}
+
       {data.series.map((s, i) => {
         const st = revealState(s.id, revealed, activeId);
         if (!st.shown) return null;
-        const { head } = drawn(s);
+        const { head, path } = drawn(s);
         const px = PLOT.x + head[0];
         const py = PLOT.y + head[1];
         const color = ensureContrast(PALETTE[i % PALETTE.length], TH.ground);
-        const ring = TH.marker.ringFrom === 'ground' ? TH.ground : color;
+        // The ring says which ERA is on screen: the team of the season the
+        // head is currently standing on. The jersey in the photograph cannot
+        // change — no per-season headshot exists at any reachable URL — so
+        // this ring is the only thing that can. `path` includes the prepended
+        // origin, so `path.length - 2` is the last season fully drawn.
+        const at = Math.max(0, Math.min(s.points.length - 1, path.length - 2));
+        const era = teamBySlug(s.points[at]?.team);
+        const teamRing = era ? ensureContrast(era.color, TH.ground) : null;
+        const ring = teamRing ?? (TH.marker.ringFrom === 'ground' ? TH.ground : color);
         const clampX = (size: number) => Math.min(V.W - size / 2 - 10, px + 30);
         const op = fadeIn(st.opacity, ms, beats, s.id, activeId);
 
@@ -238,6 +306,26 @@ export const CumulativeLines: React.FC<{
 
       </Camera>
       <AccentLayer accents={active?.accents} progress={progress} beatMs={beatMs} resolve={resolve} />
+      {/* `span` is the second accent the layer cannot draw, and for the same
+          reason `zoom` cannot: it needs more than a point. A span measures
+          between two anchors, so it needs both resolved AND the VALUES they
+          stand on — and only this component knows either. Drawn outside the
+          camera, like every other accent, so a zoom cannot smear it. */}
+      {(active?.accents ?? []).map((a, i) => {
+        if (a.kind !== 'span' || !a.at || !a.to) return null;
+        const p = accentProgress(a, progress, beatMs);
+        if (p <= 0) return null;
+        const from = resolve(a.at);
+        const to = resolve(a.to);
+        const vFrom = valueOf(a.at);
+        const vTo = valueOf(a.to);
+        // An unresolvable anchor draws nothing rather than a bracket of
+        // unknown length — `verifyDraft` rejects the draft that would.
+        if (!from || !to || vFrom === null || vTo === null) return null;
+        return (
+          <SpanBracket key={`span-${i}`} from={from} to={to} p={p} label={fmt.int(Math.abs(vFrom - vTo))} />
+        );
+      })}
     </>
   );
 };

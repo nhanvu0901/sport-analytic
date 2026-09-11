@@ -123,10 +123,21 @@ export function renderBriefMd(b: WriterBrief): string {
         : `- **${esc(e.last)}** is already past it, on ${fmt.int(e.total)}.`);
     }
     L.push('');
+    const anyId = b.facts.entities[0]?.id ?? '...';
     L.push(
       'To point an accent at the line itself, anchor it with `record`: ' +
-      `\`{ "entityId": "${b.facts.entities[0]?.id ?? '...'}", "record": true }\`. ` +
+      `\`{ "entityId": "${anyId}", "record": true }\`. ` +
       '`entityId` stays required and names whose chart it is; `refline` and `arrow` are the two kinds that read well on it.',
+      ''
+    );
+    // The gap is the number this whole video is about, and until `span`
+    // existed there was no way to DRAW it — the writer wrote it into an
+    // arrow's text instead, which puts the sentence's words on the chart
+    // rather than the measurement.
+    L.push(
+      'To draw the gap itself rather than name it, use a `span` — two anchors, and the number between them ' +
+      `is measured for you: \`{ "t": 0.7, "kind": "span", "at": { "entityId": "${anyId}" }, "to": { "entityId": "${anyId}", "record": true } }\`. ` +
+      'Write no `text` on it: the label is computed from the two anchors, which is why it cannot be a wrong number.',
       ''
     );
     L.push(`_Source: ${esc(rec.source)}_`, '');
@@ -192,13 +203,18 @@ export function renderBriefMd(b: WriterBrief): string {
         text: 'string, one sentence chaining 2-4 events',
         entityId: 'an id from facts.entities',
         accents: [
-          { t: '0..1', kind: 'zoom | refline | callout | arrow | spotlight',
+          // The kinds come from the brief's own `visual.accent_kinds` rather
+          // than a list typed out here: a kind added to ACCENT_KINDS and not
+          // to this line would be legal for the verifier and invisible to the
+          // writer, which is the same as not existing.
+          { t: '0..1', kind: b.visual.accent_kinds.join(' | '),
             at: {
               entityId: '...',
               step: 'optional — one of the anchor steps',
               ...(b.facts.record ? { record: 'optional — true to point at the record line instead of a step' } : {}),
             },
-            text: 'optional label' },
+            to: 'span ONLY — the second anchor, same shape as at; the span measures between them',
+            text: 'optional label — never on a span, whose number is computed' },
         ],
         ending: 'thesis | hard-cut | open-question — last beat only',
       },

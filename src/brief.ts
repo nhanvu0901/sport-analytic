@@ -8,7 +8,7 @@ import cumulative from './data/cumulative.json';
 import { api } from './espn';
 import { fmt } from './scale';
 import type { CareerRecord } from './records';
-import { route, type DataShape } from '../router/shape';
+import { route, type ChartId, type DataShape } from '../router/shape';
 import { ACCENT_KINDS, DENSITY_FLOOR, DENSITY_CEILING, MIN_ACCENTS_PER_BEAT, MAX_ACCENTS_PER_BEAT } from './accent';
 // A value import, and safe: verify.ts imports ONLY types from this module
 // (`import type`), so the cycle is erased at compile time and there is no
@@ -64,7 +64,15 @@ export type BriefEntity = {
   // pick was never looked up, that unknown was stored as `null`, and
   // `detectMarkers` read `null` as a fact instead of a gap.
   pick: number | null | undefined; total: number; rank: number; seasons_played: number;
-  series: { step: string; value: number }[];       // cumulative, as in the dataset
+  /**
+   * Cumulative, as in the dataset. `team` is ESPN's own per-season
+   * `teamSlug` and is optional: it costs no extra request (it is in the same
+   * response as the values) but not every source carries one — the C01
+   * dataset does not. It travels this far because the CHART needs it, and
+   * the chart must not fetch: brief -> video-<id>.json -> CumulativeLines is
+   * the one path a series already takes.
+   */
+  series: { step: string; value: number; team?: string }[];
   awards: { name: string; season: string }[];
 };
 
@@ -207,6 +215,50 @@ export function detectMarkers(entities: BriefEntity[], seasons: string[], record
 
   out.sort((a, b) => a.entityId === b.entityId ? (a.step ?? '').localeCompare(b.step ?? '') : a.entityId.localeCompare(b.entityId));
   return out;
+}
+
+/**
+ * What each chart can actually DRAW, per marker kind.
+ *
+ * `detectMarkers` answers "what is interesting in this data", which is a
+ * question about the data and not about the picture. The brief then hands
+ * those markers to the writer as "the story the numbers are hiding" — and the
+ * writer, reasonably, builds beats on them. On a rebounds chart that meant
+ * two of nine beats talking about MVP awards and championships: 42 award
+ * markers reached the writer for a chart that has no way to show an award,
+ * and the result was narration the picture could not answer.
+ *
+ * So a marker a chart cannot express is filtered out at assembly. The
+ * detection is untouched — another chart (a timeline row, an award grid) may
+ * want awards later, and deleting the detector would be the wrong fix.
+ *
+ * Keyed by `ChartId` so a typo does not compile. Only the two WIRED charts
+ * (see `src/videoData.ts`) declare a set; every other chart is unfiltered,
+ * which is the honest default — nothing is claimed about a chart nobody has
+ * wired a composition for yet.
+ *
+ * What a cumulative line can show, and why each one is on or off the list:
+ *   missed-season  a flat span where the line does not climb — drawn
+ *   jump           a steep segment against its own neighbours — drawn
+ *   plateau        a shallow segment, the same reading inverted — drawn
+ *   short-career   a line that stops early along the axis — drawn
+ *   leader         whichever line is highest at the right-hand edge — drawn
+ *   rank-flip      two lines crossing, so MULTILINE only: a chase is one line
+ *   record-gap     the distance to the threshold, so CHASE only: a multiline
+ *                  chart has no record line to measure against
+ *   award          nothing on this chart changes when a trophy is won
+ *   undrafted      there is no draft axis, no pick, nothing to point at
+ */
+export const EXPRESSIBLE_MARKERS: Partial<Record<ChartId, readonly MarkerKind[]>> = {
+  'cumulative-multiline': ['missed-season', 'jump', 'plateau', 'short-career', 'leader', 'rank-flip'],
+  'cumulative-record-chase': ['missed-season', 'jump', 'plateau', 'short-career', 'leader', 'record-gap'],
+};
+
+/** The markers this chart can express, in the order they were detected. A
+ *  chart with no declaration keeps all of them. */
+export function expressibleMarkers(markers: Marker[], chart: string): Marker[] {
+  const kinds = EXPRESSIBLE_MARKERS[chart as ChartId];
+  return kinds ? markers.filter((m) => kinds.includes(m.kind)) : markers;
 }
 
 /**
@@ -409,7 +461,6 @@ export function assembleBrief(input: BriefInput): WriterBrief {
     as_of: input.record.asOf,
   };
 
-  const markers = detectMarkers(entities, seasons, record);
   const allowed_numbers = allowedNumbers(entities, seasons, record);
 
   const shape: DataShape = {
@@ -424,6 +475,13 @@ export function assembleBrief(input: BriefInput): WriterBrief {
     imageKey: 'headshot',
   };
   const choice = route(shape);
+
+  // Detected from the data, then filtered to what THIS chart can draw. The
+  // order matters: the chart choice is what the filter is against, so the
+  // markers cannot be assembled before the router has answered. See
+  // EXPRESSIBLE_MARKERS for why a brief that offers an unshowable marker is a
+  // brief that invites unshowable narration.
+  const markers = expressibleMarkers(detectMarkers(entities, seasons, record), choice.chart);
 
   const exampleEntity = entities[0];
   const exampleStep = exampleEntity.series.at(-1)?.step;
@@ -545,6 +603,21 @@ export function assembleBrief(input: BriefInput): WriterBrief {
                         },
                         required: ['entityId'],
                       },
+                      // The second anchor, and for the same reason `record`
+                      // is declared above: a `span` is unwritable unless the
+                      // schema names the field it measures to.
+                      to: {
+                        type: 'object',
+                        additionalProperties: false,
+                        properties: {
+                          entityId: { type: 'string' },
+                          step: { type: 'string' },
+                          record: { type: 'boolean', enum: [true] },
+                        },
+                        required: ['entityId'],
+                      },
+                      // Never on a span: that label is computed from the two
+                      // anchors' own values, and an authored one is rejected.
                       text: { type: 'string' },
                     },
                   },

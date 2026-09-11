@@ -33,18 +33,35 @@ export type Anchor = {
 };
 
 /** A closed set. The writer picks from these; anything else is a schema error. */
-export type AccentKind = 'zoom' | 'refline' | 'callout' | 'arrow' | 'spotlight';
+export type AccentKind = 'zoom' | 'refline' | 'callout' | 'arrow' | 'spotlight' | 'span';
 
 export type Accent = {
   /** When inside its beat, 0..1. */
   t: number;
   kind: AccentKind;
   at?: Anchor;
-  /** Label for callout / arrow / refline. */
+  /**
+   * The SECOND anchor, and only a `span` uses it.
+   *
+   * A span is the one accent that is about the distance between two places
+   * rather than about one place, so it is the one accent that cannot be
+   * expressed with a single `at`. Before it existed the writer wrote the
+   * relation into an arrow's text instead — `{ kind: 'arrow', at: record,
+   * text: '11,829 short' }` on beat 5 of out/draft-371e3032.json — which
+   * writes the sentence's own words beside a line without drawing anything.
+   */
+  to?: Anchor;
+  /**
+   * Label for callout / arrow / refline.
+   *
+   * Never for a `span`: a span's label is the measured difference between its
+   * two anchors, computed where the values live, so it cannot be a number the
+   * writer made up. `verifyDraft` rejects an authored `text` on one.
+   */
   text?: string;
 };
 
-export const ACCENT_KINDS: AccentKind[] = ['zoom', 'refline', 'callout', 'arrow', 'spotlight'];
+export const ACCENT_KINDS: AccentKind[] = ['zoom', 'refline', 'callout', 'arrow', 'spotlight', 'span'];
 
 /** Resolve an anchor to absolute frame pixels. Charts supply this; only they
  *  know their own scales. Returns null when the anchor names nothing. */

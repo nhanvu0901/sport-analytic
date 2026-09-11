@@ -48,7 +48,13 @@ export type VideoSerie = {
   last: string;
   total: number;
   headshot: string;
-  points: { season: string; value: number }[];
+  /**
+   * `team` is ESPN's own per-season `teamSlug`, carried from the brief so the
+   * chart can mark the seasons a career changed team WITHOUT fetching
+   * anything at draw time. Optional: a dataset with no per-season team (the
+   * C01 cumulative.json) simply has none, and the chart draws no marks.
+   */
+  points: { season: string; value: number; team?: string }[];
 };
 
 export type VideoData = {
@@ -123,7 +129,7 @@ export function videoDataFrom(sessionId: string, brief: WriterBrief): VideoData 
       // portrait will 404 — visible, and better than inventing a placeholder
       // that hides which entity came from where.
       headshot: `https://a.espncdn.com/i/headshots/nba/players/full/${e.id}.png`,
-      points: e.series.map((p) => ({ season: p.step, value: p.value })),
+      points: e.series.map((p) => ({ season: p.step, value: p.value, ...(p.team ? { team: p.team } : {}) })),
     })),
     ...(record ? { record: { value: record.value, label: record.label } } : {}),
   };

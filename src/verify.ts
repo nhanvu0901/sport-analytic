@@ -146,27 +146,63 @@ export function verifyDraft(draft: Draft, brief: WriterBrief, wordsPerSecond = W
     }
 
     const accents = beat.accents ?? [];
+    /** Both anchors are checked by the same three rules — an unresolvable
+     *  `to` draws nothing exactly the way an unresolvable `at` does. `which`
+     *  only names the field in the message. */
+    const checkAnchor = (a: Accent['at'], which: 'at' | 'to') => {
+      if (!a) return;
+      if (!entityIds.has(a.entityId)) {
+        out.push({ beat: i, rule: 'accent-anchor', detail: `accent ${which} points at unknown entityId "${a.entityId}"` });
+      } else if (a.step !== undefined && !anchorSteps.has(String(a.step))) {
+        out.push({ beat: i, rule: 'accent-anchor', detail: `accent ${which} step "${a.step}" is not in visual.anchor_steps` });
+      }
+      // `record: true` points at the record line, which only a record chase
+      // has. On any other chart the chart's own Resolve returns null and the
+      // accent silently draws nothing — a beat that looks accented in the
+      // draft and is frozen on screen. Caught here instead.
+      if (a.record && !brief.facts.record) {
+        out.push({
+          beat: i, rule: 'accent-anchor',
+          detail: `accent points at the record line (${which}.record), but this brief has no facts.record`,
+        });
+      }
+    };
+
     for (const a of accents) {
       if (!accentKinds.has(a.kind)) {
         out.push({ beat: i, rule: 'accent-kind', detail: `kind "${a.kind}" is not in visual.accent_kinds` });
       }
-      if (a.at) {
-        if (!entityIds.has(a.at.entityId)) {
-          out.push({ beat: i, rule: 'accent-anchor', detail: `accent points at unknown entityId "${a.at.entityId}"` });
-        } else if (a.at.step !== undefined && !anchorSteps.has(String(a.at.step))) {
-          out.push({ beat: i, rule: 'accent-anchor', detail: `accent step "${a.at.step}" is not in visual.anchor_steps` });
-        }
-        // `record: true` points at the record line, which only a record chase
-        // has. On any other chart the chart's own Resolve returns null and the
-        // accent silently draws nothing — a beat that looks accented in the
-        // draft and is frozen on screen. Caught here instead.
-        if (a.at.record && !brief.facts.record) {
+      checkAnchor(a.at, 'at');
+      checkAnchor(a.to, 'to');
+
+      // A span is a MEASUREMENT between two anchors, so a missing or
+      // unresolvable second anchor is the same failure as an `at.record` on a
+      // brief with no record: the chart can resolve nothing, draws nothing,
+      // and the beat is frozen while the draft claims an accent.
+      if (a.kind === 'span') {
+        if (!a.at || !a.to) {
           out.push({
             beat: i, rule: 'accent-anchor',
-            detail: 'accent points at the record line (at.record), but this brief has no facts.record',
+            detail: `a span measures between two anchors and this one has ${!a.at && !a.to ? 'neither' : !a.at ? 'no at' : 'no to'}`,
           });
         }
+        // The label is computed from the data at draw time (the gap between
+        // the two anchors' own values), so an authored one is either a
+        // duplicate or a number nobody checked. Rejected rather than ignored:
+        // a typed number is exactly what `fabricated-number` exists to stop.
+        if (a.text !== undefined) {
+          out.push({
+            beat: i, rule: 'accent-text',
+            detail: `a span carries text "${a.text}", but its number is computed from the two anchors — do not write one`,
+          });
+        }
+      } else if (a.to) {
+        out.push({
+          beat: i, rule: 'accent-anchor',
+          detail: `a "${a.kind}" accent carries a second anchor (to), which only a span uses`,
+        });
       }
+
       if (a.t < 0 || a.t > 1) {
         out.push({ beat: i, rule: 'accent-t', detail: `t=${a.t} is outside [0,1]` });
       }
