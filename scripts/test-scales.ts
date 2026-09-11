@@ -6,10 +6,10 @@ import teams from '../src/data/teams.json';
 import { eventDensity, DENSITY_FLOOR, DENSITY_CEILING, accentProgress, accentSpan, ACCENT_KINDS, ACCENT_LAND_MS, MIN_ACCENT_GAP } from '../src/accent';
 import { driftStats, matchAccent, parseSrt, snapDraft, spaceAccents, spanValue, stepYears, type Word } from '../src/sync';
 import { scrollOffsetAt, revealExtentAt, type ScrollStop, type Beat } from '../src/motion';
-import { detectMarkers, allowedNumbers, STYLE_RULES, assembleBrief, normaliseStep, computeAccentBudget, expressibleMarkers, EXPRESSIBLE_MARKERS, type BriefEntity, type BriefInput, type BriefRecord, type Marker, type WriterBrief } from '../src/brief';
+import { detectMarkers, allowedNumbers, STYLE_RULES, assembleBrief, normaliseStep, computeAccentBudget, expressibleMarkers, EXPRESSIBLE_MARKERS, lengthTarget, narrativeUnits, FALLBACK_TARGET_SECONDS, MIN_BEATS, MAX_BEATS, WORDS_PER_BEAT, type BriefEntity, type BriefInput, type BriefRecord, type Marker, type WriterBrief } from '../src/brief';
 import { CAREER_RECORDS, namesRecord, recordChaseFor, recordFor } from '../src/records';
 import { deriveHookSeed, seasonUnion, seriesVerdict } from '../src/candidateBrief';
-import { verifyDraft, parseDraftText, WORDS_PER_SECOND, type Draft } from '../src/verify';
+import { verifyDraft, parseDraftText, WORDS_PER_SECOND, MAX_BEATS_PER_NUMBER, REPEATABLE_NUMBER_FLOOR, type Draft } from '../src/verify';
 
 import { renderBriefMd } from '../src/briefMd';
 import { draftToScriptLines } from '../src/scripts';
@@ -1481,13 +1481,114 @@ t('computeAccentBudget over the whole 8-12 beat range is the envelope that stays
 
 t('assembleBrief pins ONE target length and sizes the accent budget from it, not from duration_s', () => {
   assert.deepEqual(assembled.style.duration_s, [40, 95]);   // outer LEGAL bound, unchanged
-  assert.deepEqual(assembled.style.beats, [8, 12]);
-  assert.equal(assembled.style.target_seconds, 70);
-  // Derived from the shared constant, never hardcoded: 70 * 2.9 = 203.
-  assert.equal(assembled.style.target_words, Math.round(70 * WORDS_PER_SECOND));
-  assert.equal(assembled.style.target_words, 203);
-  assert.equal(assembled.visual.accent_budget.total_min, 12);
-  assert.equal(assembled.visual.accent_budget.total_max, 19);
+  // Three entities = three narrative units, so 2 + 3 = 5 beats — stated as a
+  // degenerate range, because the brief decides the beat count, not the writer.
+  assert.deepEqual(assembled.style.beats, [5, 5]);
+  // Derived from the shared constants, never hardcoded: 5 * 25 = 125 words,
+  // and the SECONDS come from the words (125 / 2.9 = 43.1), not the reverse.
+  assert.equal(assembled.style.target_words, 5 * WORDS_PER_BEAT);
+  assert.equal(assembled.style.target_words, 125);
+  assert.equal(assembled.style.target_seconds, Math.round((125 / WORDS_PER_SECOND) * 10) / 10);
+  assert.equal(assembled.style.target_seconds, 43.1);
+  assert.equal(assembled.visual.accent_budget.total_min, 5);    // max(5 x 1, ceil(0.22*43.1) - 5)
+  assert.equal(assembled.visual.accent_budget.total_max, 14);   // floor(0.45*43.1) - 5
+});
+
+/* --------------------------------------------- brief.ts: the length target
+ *
+ * `target_seconds = 70` was a constant, and it is what forced a 371e3032
+ * draft to pad: the story was complete at 135 words (beat 5 of 8) and the
+ * brief demanded 203, so the last three beats introduced no new number at all
+ * — 23,924 was spoken in beats 1, 6 AND 8. A length that counts what the
+ * brief has to say cannot ask for that. */
+
+/** LeBron's real shape: 23 seasons across four eras, chasing one record. */
+const chaseEntity = briefEntity({
+  id: 'lbj', name: 'LeBron James', first: 'LeBron', last: 'James', total: 12095, seasons_played: 23,
+  series: [
+    ...Array.from({ length: 7 }, (_, i) => ({ step: `200${3 + i}-0${4 + i}`, value: 100 * (i + 1), team: 'cleveland-cavaliers' })),
+    ...Array.from({ length: 4 }, (_, i) => ({ step: `201${i}-1${1 + i}`, value: 800 + 100 * i, team: 'miami-heat' })),
+    ...Array.from({ length: 4 }, (_, i) => ({ step: `201${4 + i}-1${5 + i}`, value: 1200 + 100 * i, team: 'cleveland-cavaliers' })),
+    ...Array.from({ length: 8 }, (_, i) => ({ step: `20${18 + i}-${19 + i}`, value: 1600 + 100 * i, team: 'los-angeles-lakers' })),
+  ],
+});
+
+const wiltRecord: BriefRecord = {
+  measure: 'REB', unit: 'rebounds', holder: 'Wilt Chamberlain', value: 23924, seasons: 14,
+  label: 'Wilt Chamberlain · 23,924', gap: [{ entityId: 'lbj', short: 11829 }], source: 'test', as_of: '2026-09-04',
+};
+
+t('narrativeUnits counts a chase by its team eras plus the record gap', () => {
+  // Four contiguous runs (Cleveland, Miami, Cleveland, Los Angeles) + 1 gap.
+  assert.equal(narrativeUnits([chaseEntity], wiltRecord), 5);
+  const oneTeam = briefEntity({ id: 'x', series: [{ step: '2019-20', value: 1, team: 'miami-heat' }, { step: '2020-21', value: 2, team: 'miami-heat' }] });
+  assert.equal(narrativeUnits([oneTeam], wiltRecord), 2, 'one era + the gap');
+});
+
+t('narrativeUnits counts a race by its entities', () => {
+  const race = Array.from({ length: 10 }, (_, i) => briefEntity({ id: `e${i}`, total: i }));
+  assert.equal(narrativeUnits(race, undefined), 10);
+  assert.equal(narrativeUnits(assembleInput.entities, undefined), 3);
+});
+
+t('narrativeUnits reports nothing for a lone entity with no record — the fallback case', () => {
+  assert.equal(narrativeUnits([briefEntity({ id: 'solo' })], undefined), null);
+});
+
+t('lengthTarget derives beats from the units and the words from the beats', () => {
+  const chase = lengthTarget([chaseEntity], wiltRecord);
+  assert.equal(chase.units, 5);
+  assert.deepEqual(chase.beats, [7, 7]);                 // 2 + 5
+  assert.equal(chase.target_words, 175);                 // 7 * 25
+  assert.equal(chase.target_seconds, 60.3);              // 175 / 2.9, one decimal
+  // 30.4 seconds of the old 70s constant were padding for this exact brief.
+  assert.ok(chase.target_seconds < FALLBACK_TARGET_SECONDS);
+});
+
+t('lengthTarget clamps at both ends — 1 unit cannot fall below 5 beats, 20 cannot climb past 12', () => {
+  // A one-era chase with no team data at all: 1 era + 1 gap = 2 units, so
+  // 2 + 2 = 4 beats, clamped up to the floor.
+  const tiny = lengthTarget([briefEntity({ id: 'x', series: [{ step: '2019-20', value: 1 }] })], wiltRecord);
+  assert.equal(tiny.units, 2);
+  assert.deepEqual(tiny.beats, [MIN_BEATS, MIN_BEATS]);
+  assert.equal(tiny.target_words, MIN_BEATS * WORDS_PER_BEAT);
+  // 20 entities would be 22 beats; the ceiling is what keeps the accent
+  // budget inside the density band.
+  const huge = lengthTarget(Array.from({ length: 20 }, (_, i) => briefEntity({ id: `e${i}` })), undefined);
+  assert.deepEqual(huge.beats, [MAX_BEATS, MAX_BEATS]);
+  assert.equal(huge.target_words, MAX_BEATS * WORDS_PER_BEAT);
+});
+
+t('lengthTarget keeps the old constant for a brief whose shape it cannot read', () => {
+  // A lone entity with no record — and, like the C01 dataset, no team data on
+  // its series either. Nothing here counts units, so nothing here changes.
+  const solo = briefEntity({ id: 'solo', series: [{ step: '2019-20', value: 1 }, { step: '2020-21', value: 2 }] });
+  const fb = lengthTarget([solo], undefined);
+  assert.equal(fb.units, null);
+  assert.deepEqual(fb.beats, [8, 12]);
+  assert.equal(fb.target_seconds, FALLBACK_TARGET_SECONDS);
+  assert.equal(fb.target_words, 203);
+  // And a whole brief built that way still budgets exactly as it used to.
+  const oldShape = assembleBrief({ ...assembleInput, entities: [solo] });
+  assert.deepEqual(oldShape.style.beats, [8, 12]);
+  assert.equal(oldShape.style.target_seconds, 70);
+  assert.equal(oldShape.visual.accent_budget.total_min, 12);
+  assert.equal(oldShape.visual.accent_budget.total_max, 19);
+});
+
+t('a derived length keeps the density band: every corner of both real videos is legal', () => {
+  // The point of deriving seconds from beats: both terms of the density ratio
+  // fall together, so the band must hold at the new length too.
+  for (const lt of [lengthTarget([chaseEntity], wiltRecord),
+                    lengthTarget(Array.from({ length: 10 }, (_, i) => briefEntity({ id: `e${i}` })), undefined)]) {
+    const budget = computeAccentBudget(lt.target_seconds, lt.beats);
+    assert.ok(budget.total_min <= budget.total_max, `budget crossed at ${lt.target_seconds}s`);
+    for (const accents of [budget.total_min, budget.total_max]) {
+      const perSecond = (lt.beats[1] + accents) / lt.target_seconds;
+      assert.ok(perSecond >= DENSITY_FLOOR && perSecond <= DENSITY_CEILING,
+        `${lt.beats[1]} beats + ${accents} accents = ${perSecond.toFixed(3)} events/s at ${lt.target_seconds}s`);
+    }
+  }
 });
 
 // verifyDraft's real density formula (src/verify.ts) counts each BEAT as an
@@ -1568,6 +1669,61 @@ t('the same 8 beats and 16 accents at the 203-word target trip neither length no
   assert.equal(accents, 16, 'the accent count is unchanged from the rejected draft — only the length is');
   const v = verifyDraft({ title: 't', beats }, densityBrief);
   assert.deepEqual(v.filter((x) => x.rule === 'length' || x.rule === 'density'), []);
+});
+
+/* ------------------------------------------------ verify.ts: repeat-number
+ *
+ * The measured padding on 371e3032: 23,924 carried beats 1, 6 AND 8, and the
+ * last three beats of the draft introduced no new number at all. A number
+ * that carries a third beat is a beat that added nothing — mechanically
+ * checkable, in the same family as `allowed_numbers`. The limit is two, not
+ * one, because a closing thesis legitimately echoes the headline figure. */
+
+const repeatBrief = {
+  ...densityBrief,
+  facts: { ...densityBrief.facts, allowed_numbers: [4, 3861, 11829, 12095, 23924] },
+} as unknown as WriterBrief;
+
+/** One beat carrying the given sentence — accents and length are somebody
+ *  else's rules, so only the `repeat-number` verdict is read back. */
+const numBeat = (text: string) => ({ text, entityId: 'p1', accents: [{ t: 0.3, kind: 'zoom' as const }] });
+const repeats = (texts: string[]) =>
+  verifyDraft({ title: 't', beats: texts.map(numBeat) }, repeatBrief).filter((v) => v.rule === 'repeat-number');
+
+t('repeat-number rejects a number that carries three beats, naming the number and the beats', () => {
+  const v = repeats([
+    'James is 11,829 rebounds short of 23,924 and the chase is already over.',
+    'The record stands at 23,924 and nobody has come close.',
+    'It ends at 23,924, and that is the whole story.',
+  ]);
+  assert.equal(v.length, 1, `expected exactly one repeat-number violation, got ${JSON.stringify(v)}`);
+  assert.ok(v[0].detail.includes('23,924'), `must name the number: ${v[0].detail}`);
+  assert.ok(/0, 1, 2/.test(v[0].detail), `must name the beats that carry it: ${v[0].detail}`);
+  assert.equal(v[0].beat, null, 'a whole-script rule reports no single beat');
+});
+
+t('repeat-number allows two — the closing thesis may echo the headline figure', () => {
+  assert.deepEqual(repeats([
+    'James is 11,829 short of 23,924 and the gap is still growing.',
+    'He adds 3,861 in Miami, but the pace never changes.',
+    'So 23,924 stays where it is, and the chase was never alive.',
+  ]), []);
+});
+
+t('repeat-number ignores ordinals and small integers — only headline figures are counted', () => {
+  assert.ok(REPEATABLE_NUMBER_FLOOR > 12, 'the ordinals allowedNumbers grants must sit under the floor');
+  assert.deepEqual(repeats([
+    'He is 4 seasons in and already second, but the board has not moved.',
+    'By year 4 the gap is 11,829, and 4 more would not close it.',
+    'A 4th season ends it, and nobody is second by accident.',
+  ]), [], 'a small integer may carry every beat in the script');
+});
+
+t('repeat-number counts BEATS, not mentions — a number said twice in one sentence carries one beat', () => {
+  assert.deepEqual(repeats([
+    'He sits on 12,095 and 12,095 is not close to the record.',
+    'The gap is 11,829, and 12,095 is where it stops.',
+  ]), [], `${MAX_BEATS_PER_NUMBER} beats is the limit, and two mentions in one beat are one beat`);
 });
 
 /* ------------------------------------------------------------- drafts.ts

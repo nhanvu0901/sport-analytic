@@ -77,11 +77,17 @@ export function renderBriefMd(b: WriterBrief): string {
   const byRank = [...b.facts.entities].sort((x, y) => x.rank - y.rank);
   const L: string[] = [];
 
+  // The beat count is DERIVED from this brief's narrative units, so it is
+  // normally one number stated twice ([7, 7]). "7–7" reads as a range a
+  // writer may pick inside; "exactly 7" reads as the instruction it is.
+  const exactBeats = b.style.beats[0] === b.style.beats[1];
+  const beatsLabel = exactBeats ? String(b.style.beats[0]) : `${b.style.beats[0]}–${b.style.beats[1]}`;
+
   /* 1. header + compact fact line ---------------------------------------- */
   L.push(`# Brief — ${b.topic.question}`, '');
   L.push(
     `**Angle:** ${b.topic.angle} · **Lane:** ${b.topic.lane} · **Chart:** ${b.visual.chart} · ` +
-    `**Camera:** ${b.visual.camera} · **Beats:** ${b.style.beats[0]}–${b.style.beats[1]}`,
+    `**Camera:** ${b.visual.camera} · **Beats:** ${exactBeats ? `exactly ${beatsLabel}` : beatsLabel}`,
     ''
   );
   // Length as ONE number, not the legal range. The range is what a Short may
@@ -100,7 +106,7 @@ export function renderBriefMd(b: WriterBrief): string {
   );
   L.push(
     `**Accent budget:** ${b.visual.accent_budget.total_min}–${b.visual.accent_budget.total_max} accents total ` +
-    `across all ${b.style.beats[0]}–${b.style.beats[1]} beats — ${b.visual.accent_budget.per_beat_hint}`,
+    `across all ${beatsLabel} beats — ${b.visual.accent_budget.per_beat_hint}`,
     ''
   );
 

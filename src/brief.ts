@@ -9,6 +9,7 @@ import { api } from './espn';
 import { fmt } from './scale';
 import type { CareerRecord } from './records';
 import { route, type ChartId, type DataShape } from '../router/shape';
+import { teamChanges } from './teams';
 import { ACCENT_KINDS, DENSITY_FLOOR, DENSITY_CEILING, MIN_ACCENTS_PER_BEAT, MAX_ACCENTS_PER_BEAT } from './accent';
 // A value import, and safe: verify.ts imports ONLY types from this module
 // (`import type`), so the cycle is erased at compile time and there is no
@@ -123,6 +124,10 @@ export type WriterBrief = {
     /** `target_seconds` in words, at WORDS_PER_SECOND. This, not the second
      *  count, is what a writer can actually count while writing. */
     target_words: number;
+    /** How many beats this video is, as `[fewest, most]`. Normally a
+     *  degenerate range — one number said twice — because the beat count is
+     *  DERIVED from the brief's narrative units (`lengthTarget`), not chosen
+     *  by the writer. Only the fallback still names a real range. */
     beats: [number, number]; ending_variants: EndingVariant[]; forbidden: string[];
   };
   output: { format: 'json'; schema: unknown; example: unknown };
@@ -338,6 +343,105 @@ export const STYLE_RULES: string[] = [
 ];
 
 /**
+ * How many NARRATIVE UNITS this brief has — how many things it actually has
+ * to say — or null when its shape says nothing about that.
+ *
+ * This is the measurement that replaced a hardcoded 70-second target. That
+ * constant demanded 203 words of a chase whose story was complete in 135:
+ * the last three beats of a real 371e3032 draft introduced no new number at
+ * all, and every figure in them (23,924; 12,095; 11,829) had already been
+ * spoken earlier. The writer was not padding by choice — `style.target_words`
+ * said 203 and `verifyDraft` raises `length` below tolerance, so padding was
+ * the only legal move. A length that follows the content cannot ask for that.
+ *
+ * The two shapes, and what one unit is in each:
+ *
+ *  - a single-entity record chase: one unit per TEAM ERA (the contiguous runs
+ *    `teamChanges` already finds, and `briefMd.ts` already prints as "Which
+ *    team, which seasons"), plus one for the gap to the record. A career told
+ *    city by city is the shape these scripts actually take, and the gap is the
+ *    beat the whole video exists for. LeBron James: Cleveland, Miami,
+ *    Cleveland, Los Angeles = 4 eras, + 1 gap = 5 units.
+ *  - a multi-entity race: one unit per ENTITY. Each line on the chart is one
+ *    thing the script has to account for.
+ *
+ * A series carrying no team at all (the C01 dataset has none) reports ONE era,
+ * not zero: no change is visible in the data, so the honest reading is the
+ * single unbroken run it looks like — never a guess at eras we cannot see.
+ *
+ * Null means neither shape — a lone entity with no record to chase. The
+ * caller keeps the old constant for that case; see `lengthTarget`.
+ */
+export function narrativeUnits(entities: BriefEntity[], record?: BriefRecord): number | null {
+  if (record && entities.length === 1) {
+    const eras = teamChanges(entities[0].series).length + 1;
+    return eras + 1;
+  }
+  if (entities.length > 1) return entities.length;
+  return null;
+}
+
+/** Words one beat is worth. ONE definition: `target_words` is derived from it
+ *  and `target_seconds` is derived from `target_words`, so the three can
+ *  never disagree the way a separately-written seconds constant did. */
+export const WORDS_PER_BEAT = 25;
+
+/** A hook and a close sit either side of the units, so a 5-unit brief is 7
+ *  beats. The clamp is the outer bound on that: below 5 beats there is no
+ *  room for a flip between hook and close, and above 12 the accent budget
+ *  stops fitting inside the density ceiling (12 beats already spend 12 of the
+ *  ~31 events a 70s script may have). */
+export const MIN_BEATS = 5;
+export const MAX_BEATS = 12;
+
+/** The fallback for a brief whose shape reports no units at all: the constant
+ *  that used to be hardcoded for EVERY brief — 70s, 203 words, 8-12 beats.
+ *  Kept rather than invented so a brief this measurement cannot read behaves
+ *  exactly as it did before. */
+export const FALLBACK_TARGET_SECONDS = 70;
+export const FALLBACK_BEATS: readonly [number, number] = [8, 12];
+
+export type LengthTarget = {
+  /** null = neither shape; the fallback below is in force. */
+  units: number | null;
+  /** Degenerate ([n, n]) whenever the units are countable: the brief states
+   *  its own beat count, and `verifyDraft` checks the draft against THIS,
+   *  never against a literal. Only the fallback still names a range. */
+  beats: [number, number];
+  target_words: number;
+  target_seconds: number;
+};
+
+/**
+ * The length this brief should be, derived from what it has to say.
+ *
+ *     beats   = clamp(2 + units, 5, 12)      a hook, one beat per unit, a close
+ *     words   = beats * WORDS_PER_BEAT
+ *     seconds = words / WORDS_PER_SECOND
+ *
+ * Seconds LAST, and that ordering is the fix: the old code pinned 70 seconds
+ * and multiplied to get words, so the word count was an answer to a question
+ * nobody had asked about this video's content.
+ */
+export function lengthTarget(entities: BriefEntity[], record?: BriefRecord): LengthTarget {
+  const units = narrativeUnits(entities, record);
+  if (units === null) {
+    return {
+      units,
+      beats: [...FALLBACK_BEATS] as [number, number],
+      target_words: Math.round(FALLBACK_TARGET_SECONDS * WORDS_PER_SECOND),
+      target_seconds: FALLBACK_TARGET_SECONDS,
+    };
+  }
+  const beats = Math.min(MAX_BEATS, Math.max(MIN_BEATS, 2 + units));
+  const target_words = Math.round(beats * WORDS_PER_BEAT);
+  // One decimal, because the quotient rarely is one (175 / 2.9 = 60.34…) and
+  // this number is printed in the brief and in every `length` violation.
+  const target_seconds = Math.round((target_words / WORDS_PER_SECOND) * 10) / 10;
+  return { units, beats: [beats, beats], target_words, target_seconds };
+}
+
+/**
  * Turn the measured density band into an absolute accent budget for one
  * video.
  *
@@ -486,20 +590,17 @@ export function assembleBrief(input: BriefInput): WriterBrief {
   const exampleEntity = entities[0];
   const exampleStep = exampleEntity.series.at(-1)?.step;
 
-  // Defined once so `visual.accent_budget` and `style.target_seconds`/`beats`
+  // Derived once so `visual.accent_budget` and `style.target_seconds`/`beats`
   // can never drift apart — the budget is meaningless if it is computed from
   // a different length than the one actually shipped in the brief.
   //
   // `durationS` stays the outer LEGAL bound (a 40s or a 95s Short is still a
-  // Short). `targetSeconds` is the single length the writer aims at, and the
-  // only one the accent budget can be sized against: density is measured
-  // against the draft's real spoken length, so a target that is a 2.4x-wide
-  // range is not a target at all. 70s sits mid-band and is where the density
-  // target of 0.30 events/s buys a usable 21 events.
+  // Short). The target inside it is no longer a constant: it counts this
+  // brief's own narrative units and sizes the script to them, because a fixed
+  // 70s forced a story that finished at 47s to spend 30 more seconds saying
+  // numbers it had already said. See `lengthTarget`.
   const durationS: [number, number] = [40, 95];
-  const targetSeconds = 70;
-  const targetWords = Math.round(targetSeconds * WORDS_PER_SECOND);
-  const beatsRange: [number, number] = [8, 12];
+  const { beats: beatsRange, target_words: targetWords, target_seconds: targetSeconds } = lengthTarget(entities, record);
   const accentBudget = computeAccentBudget(targetSeconds, beatsRange);
 
   return {
@@ -560,6 +661,8 @@ export function assembleBrief(input: BriefInput): WriterBrief {
         'more than 3 accents in one beat',
         'a running accent total outside visual.accent_budget',
         'a total word count more than 15% away from style.target_words',
+        'a beat count outside style.beats',
+        'the same number carrying more than 2 beats',
         'a chart not in visual.alternates',
       ],
     },

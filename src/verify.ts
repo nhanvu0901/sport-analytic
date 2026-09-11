@@ -93,8 +93,9 @@ const SEASON_LABEL = /^\d{4}-\d{2}$/;
 
 /**
  * How far a draft's spoken length may sit from `style.target_words` before it
- * is a different video. +/-15% of the 203-word target is 173-233 words, i.e.
- * ~60-80s against the 70s the accent budget is sized for.
+ * is a different video. The target itself is per-brief — derived from how many
+ * narrative units it has (src/brief.ts's `lengthTarget`) — so this is the only
+ * length figure that is a constant: +/-15% of whatever that brief asked for.
  *
  * This exists as its OWN rule, distinct from `density`, on purpose. A
  * 125-word draft with 8 beats and 16 accents measures 0.557 events/s and used
@@ -103,6 +104,32 @@ const SEASON_LABEL = /^\d{4}-\d{2}$/;
  * "density" sent a reader hunting for accents to delete.
  */
 export const LENGTH_TOLERANCE = 0.15;
+
+/**
+ * How many beats one number may carry, and the size below which the count is
+ * not kept at all.
+ *
+ * Measured on a real 371e3032 draft: 23,924 carried beats 1, 6 AND 8, 12,095
+ * carried 5 and 6, 11,829 carried 5 and 7 — and the last three beats
+ * introduced no new number at all. That is what padding looks like from the
+ * outside, and it is mechanically checkable in the same family as
+ * `allowed_numbers`: restating a figure is not a style opinion, it is a beat
+ * that added nothing.
+ *
+ * TWO, not one, because the limit has to leave room for the one honest echo
+ * this format has: a closing thesis restating the headline figure the hook
+ * opened with. A third beat on the same number is no longer an echo.
+ *
+ * The floor exempts what a script legitimately repeats — ordinals ("second",
+ * "fourth"), ranks, season counts, draft picks. `allowedNumbers` puts 1..12 on
+ * the list for exactly that reason, and a headline figure (a career total, a
+ * record, a gap) is never that small: the smallest number this rule is meant
+ * to catch, 3,861, is an order of magnitude above the floor. A season LABEL is
+ * not counted at all — it is tokenised separately and checked against
+ * `anchor_steps`, not against quantities.
+ */
+export const MAX_BEATS_PER_NUMBER = 2;
+export const REPEATABLE_NUMBER_FLOOR = 300;
 
 /**
  * The single source of truth for spoken pace. `verifyDraft` uses it to turn
@@ -125,11 +152,21 @@ export function verifyDraft(draft: Draft, brief: WriterBrief, wordsPerSecond = W
    *  per-season team at all. The `team-era` rule is skipped entirely for them
    *  rather than firing on every beat that happens to name a city. */
   const hasTeams = brief.facts.entities.some((e) => e.series.some((s) => s.team));
+  /** Every number the script says, and which beats say it — collected in the
+   *  same pass that checks `allowed_numbers`, and judged after the loop by
+   *  the `repeat-number` rule. `text` is the first spelling seen, so the
+   *  message quotes the draft rather than a re-formatted number. */
+  const saidIn = new Map<number, { text: string; beats: number[] }>();
 
-  if (draft.beats.length < brief.style.beats[0] || draft.beats.length > brief.style.beats[1]) {
+  // Against the BRIEF's own number, never a literal: the beat count is
+  // derived from how many narrative units the brief has (src/brief.ts's
+  // `lengthTarget`), so it is normally a single number stated twice.
+  const [fewestBeats, mostBeats] = brief.style.beats;
+  if (draft.beats.length < fewestBeats || draft.beats.length > mostBeats) {
     out.push({
       beat: null, rule: 'beat-count',
-      detail: `${draft.beats.length} beats, expected between ${brief.style.beats[0]} and ${brief.style.beats[1]}`,
+      detail: `${draft.beats.length} beats, expected `
+        + (fewestBeats === mostBeats ? `exactly ${mostBeats}` : `between ${fewestBeats} and ${mostBeats}`),
     });
   }
 
@@ -149,6 +186,11 @@ export function verifyDraft(draft: Draft, brief: WriterBrief, wordsPerSecond = W
       if (!allowed.has(n)) {
         out.push({ beat: i, rule: 'fabricated-number', detail: `"${m}" is not in facts.allowed_numbers` });
       }
+      const seen = saidIn.get(n) ?? { text: m, beats: [] };
+      // Beats arrive in order, so the last entry is the only one that can be
+      // this beat: a number said twice in ONE sentence still carries one beat.
+      if (seen.beats.at(-1) !== i) seen.beats.push(i);
+      saidIn.set(n, seen);
     }
 
     const accents = beat.accents ?? [];
@@ -298,6 +340,18 @@ export function verifyDraft(draft: Draft, brief: WriterBrief, wordsPerSecond = W
       out.push({ beat: i, rule: 'chain', detail: 'no and/but/then/while connecting multiple events' });
     }
   });
+
+  // A number may carry at most MAX_BEATS_PER_NUMBER beats. The third beat on
+  // the same figure is the shape padding takes when a length target is longer
+  // than the story — see MAX_BEATS_PER_NUMBER for the measurement.
+  for (const [n, seen] of saidIn) {
+    if (n < REPEATABLE_NUMBER_FLOOR || seen.beats.length <= MAX_BEATS_PER_NUMBER) continue;
+    out.push({
+      beat: null, rule: 'repeat-number',
+      detail: `${seen.text} carries beats ${seen.beats.join(', ')} — a number may carry at most `
+        + `${MAX_BEATS_PER_NUMBER}, and the ${seen.beats.length}${seen.beats.length === 3 ? 'rd' : 'th'} says nothing new`,
+    });
+  }
 
   const totalWords = draft.beats.reduce((n, b) => n + b.text.split(/\s+/).filter(Boolean).length, 0);
   const totalAccents = draft.beats.reduce((n, b) => n + (b.accents?.length ?? 0), 0);
