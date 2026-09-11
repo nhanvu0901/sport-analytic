@@ -60,3 +60,73 @@ export function teamChanges<T extends { team?: string }>(points: readonly T[]): 
   }
   return out;
 }
+
+/**
+ * The extra names a script actually SAYS, beyond the city and the nickname
+ * that `teamAliases` derives from the row itself.
+ *
+ * Two kinds of entry, and both are here because a narration writes them:
+ * the clipped nickname ("Cavs", "Sixers", "Blazers"), and the city a row
+ * spells differently from the way it is spoken — ESPN writes "LA Clippers"
+ * and "Los Angeles Lakers", so BOTH spellings are listed under BOTH LA teams.
+ * That deliberate overlap is safe because the caller passes if ANY named team
+ * matches: "he moved to LA" must not convict a Lakers beat of naming the
+ * Clippers.
+ *
+ * Deliberately short. An alias is only worth adding when a writer would
+ * plausibly use it instead of the full name, and every alias added is another
+ * chance for a false match.
+ */
+const EXTRA_ALIASES: Record<string, readonly string[]> = {
+  'cleveland-cavaliers': ['Cavs'],
+  'los-angeles-lakers': ['LA', 'L.A'],
+  'la-clippers': ['Los Angeles', 'L.A'],
+  'philadelphia-76ers': ['Sixers', 'Philly'],
+  'portland-trail-blazers': ['Blazers'],
+  'minnesota-timberwolves': ['Wolves', 'T-Wolves'],
+  'oklahoma-city-thunder': ['OKC'],
+  'golden-state-warriors': ['Dubs'],
+  'new-orleans-pelicans': ['Pels'],
+};
+
+/**
+ * Every way this team can be named in prose: its city, its nickname, and any
+ * extras above.
+ *
+ * The city is the name with the nickname suffix removed — "Cleveland
+ * Cavaliers" minus "Cavaliers" — which holds for all 30 rows including the
+ * two-word ones ("Portland" + "Trail Blazers", "Oklahoma City" + "Thunder").
+ */
+export function teamAliases(t: TeamMark): string[] {
+  const city = t.name.slice(0, t.name.length - t.short.length).trim();
+  return [city, t.short, ...(EXTRA_ALIASES[teamSlug(t.name)] ?? [])];
+}
+
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/** One matcher per alias, built once. The lookarounds are `\b` that also
+ *  survive an alias ending in punctuation ("L.A"), and the match is
+ *  case-insensitive because a writer's casing is not a fact we control. */
+const ALIAS_PATTERNS: { re: RegExp; slug: string }[] = (teams as TeamMark[]).flatMap((t) => {
+  const slug = teamSlug(t.name);
+  return teamAliases(t).map((a) => ({
+    re: new RegExp(`(?<![A-Za-z0-9])${escapeRe(a)}(?![A-Za-z0-9])`, 'i'),
+    slug,
+  }));
+});
+
+/**
+ * Every team slug named anywhere in `text` — "Cleveland", "Cavaliers" and
+ * "Cavs" all resolve to `cleveland-cavaliers`.
+ *
+ * A nickname that is also an ordinary English word ("Heat", "Magic",
+ * "Thunder") can match prose that meant the word. That is tolerable only
+ * because the one caller — `verifyDraft`'s `team-era` rule — passes a beat
+ * when ANY named team matches: a stray word adds a candidate, it never
+ * removes the right one.
+ */
+export function teamsNamedIn(text: string): string[] {
+  const out = new Set<string>();
+  for (const { re, slug } of ALIAS_PATTERNS) if (re.test(text)) out.add(slug);
+  return [...out];
+}

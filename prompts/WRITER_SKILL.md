@@ -199,6 +199,35 @@ season. A beat that names a number should anchor **the season that number
 belongs to** — say 6,086 and anchor 2013-14, and the head of the line is
 sitting on 6,086 while the voice says it.
 
+### The anchored season also names a TEAM
+
+A career is one line but not one jersey. The brief's **Which team, which
+seasons** table gives the eras — the contiguous runs of seasons a player spent
+at one club:
+
+```
+| LeBron James | Cleveland Cavaliers | 2003-04 .. 2009-10 |
+| LeBron James | Miami Heat          | 2010-11 .. 2013-14 |
+| LeBron James | Cleveland Cavaliers | 2014-15 .. 2017-18 |
+| LeBron James | Los Angeles Lakers  | 2018-19 .. 2025-26 |
+```
+
+**The chart draws that team's logo at every change.** The picture states the
+era on its own, so a sentence that names a different team is not a small
+inaccuracy — it is the scene and the voice disagreeing about a fact the viewer
+can see.
+
+So: **a beat that names a team must name the team of the season it anchors.**
+Checked mechanically, rejected with the rule `team-era`, which names the team
+you said, the season you anchored and the team that season actually was. A
+sentence that names BOTH teams of a move — "he leaves Cleveland for Miami" —
+passes on either anchor, so a transition needs no special care.
+
+The eras are worth using rather than merely obeying. They are the one piece of
+biography in the brief: a total that took three cities to build is a different
+story from the same total in one, and the change of jersey is the natural place
+for the flip (rule 5) to land.
+
 ### Pointing at the record line
 
 Some briefs are a **record chase**: one player's career total climbing towards
@@ -309,6 +338,8 @@ failure sends the whole script back with the violated rule named.
 - [ ] Every number appears in `allowed_numbers`.
 - [ ] Every `entityId` appears in `facts.entities`.
 - [ ] Every `at.step` appears in `visual.anchor_steps`.
+- [ ] Every beat that names a team names the team of the season it anchors —
+      check it against **Which team, which seasons**.
 - [ ] The `at.step` anchors move forward through the career, and the final
       season is not anchored before the beat that reveals the total.
 - [ ] Any `at.record` or `to.record` anchor is on a brief that has `facts.record`.

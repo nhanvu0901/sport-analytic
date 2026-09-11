@@ -4,6 +4,7 @@
  * Every rule below maps to one line in `brief.style.rules` or `forbidden`.
  */
 import { MIN_ACCENTS_PER_BEAT, MAX_ACCENTS_PER_BEAT, MIN_ACCENT_GAP, type Accent } from './accent';
+import { teamBySlug, teamsNamedIn } from './teams';
 import type { WriterBrief, EndingVariant } from './brief';
 
 export type Draft = {
@@ -119,6 +120,11 @@ export function verifyDraft(draft: Draft, brief: WriterBrief, wordsPerSecond = W
   const accentKinds = new Set(brief.visual.accent_kinds);
   const anchorSteps = new Set(brief.visual.anchor_steps);
   const endingVariants = new Set(brief.style.ending_variants);
+  const entityById = new Map(brief.facts.entities.map((e) => [e.id, e]));
+  /** Older briefs — and sources that never carried a team, like C01 — have no
+   *  per-season team at all. The `team-era` rule is skipped entirely for them
+   *  rather than firing on every beat that happens to name a city. */
+  const hasTeams = brief.facts.entities.some((e) => e.series.some((s) => s.team));
 
   if (draft.beats.length < brief.style.beats[0] || draft.beats.length > brief.style.beats[1]) {
     out.push({
@@ -225,6 +231,46 @@ export function verifyDraft(draft: Draft, brief: WriterBrief, wordsPerSecond = W
         beat: i, rule: 'accents-per-beat',
         detail: `${accents.length} accents, expected ${MIN_ACCENTS_PER_BEAT} to ${MAX_ACCENTS_PER_BEAT}`,
       });
+    }
+
+    /**
+     * The voice and the picture must agree on which jersey this season was.
+     *
+     * A beat's `at.step` draws the line to that season AND puts a team logo
+     * on it; a beat that says "Cleveland" while its anchored 2013-14 draws
+     * the Miami mark is the scene contradicting the narration, which is
+     * worse than a wrong jersey. Measured on a real draft before this rule
+     * existed.
+     *
+     * Three deliberate narrowings, each of which would otherwise reject a
+     * correct beat:
+     *  - a beat that names no team, or anchors no step, is not checked — it
+     *    claims nothing about an era;
+     *  - ANY named team matching is enough, so a transition sentence ("he
+     *    left Cleveland for Miami") passes without a special case;
+     *  - the step's team is looked up under the ACCENT's own entityId, not
+     *    the beat's, because that is whose line the anchor moves.
+     */
+    if (hasTeams) {
+      const said = teamsNamedIn(beat.text);
+      // Deduped: two accents on the same season are one claim about the era,
+      // and naming it twice in the message reads as two separate faults.
+      const byStep = new Map<string, string>();
+      for (const a of accents) {
+        if (!a.at || a.at.step === undefined) continue;
+        const step = String(a.at.step);
+        const team = entityById.get(a.at.entityId)?.series.find((s) => s.step === step)?.team;
+        if (team) byStep.set(step, team);
+      }
+      const anchored = [...byStep].map(([step, team]) => ({ step, team }));
+      if (said.length && anchored.length && !anchored.some((x) => said.includes(x.team))) {
+        const nameOf = (slug: string) => teamBySlug(slug)?.name ?? slug;
+        out.push({
+          beat: i, rule: 'team-era',
+          detail: `text names ${said.map(nameOf).join(' / ')}, but its anchored `
+            + `${anchored.map((x) => `${x.step} was ${nameOf(x.team)}`).join(', ')}`,
+        });
+      }
     }
 
     if (i === 0) {

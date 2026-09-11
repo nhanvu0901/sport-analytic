@@ -16,7 +16,7 @@ import { draftToScriptLines } from '../src/scripts';
 import { asDraft, narratesDraft, separatorExample } from '../src/drafts';
 import { asTimeline } from '../src/timeline';
 import { compositionIdFor, isWired, videoDataFrom, WIRED_CHARTS } from '../src/videoData';
-import { teamBySlug, teamChanges, teamSlug } from '../src/teams';
+import { teamBySlug, teamChanges, teamSlug, teamsNamedIn } from '../src/teams';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -696,6 +696,78 @@ t('a season label is one token: "2021-22" passes while a fabricated "9,999" besi
     `an unknown season label must still be rejected, got ${JSON.stringify(bogus)}`);
 });
 
+/* ------------------------------------------------ verify.ts: team-era
+ * The chart draws a team logo at every season the team changes, so an
+ * anchored step states an era whether the sentence agrees with it or not. A
+ * real draft said "Cleveland" over an anchored 2013-14 that the picture drew
+ * as Miami; these pin the rule that now rejects that. */
+const eraBrief = {
+  ...miniBrief,
+  facts: {
+    ...miniBrief.facts,
+    entities: [
+      entity({
+        id: 'p1', name: 'Alpha One', first: 'Alpha', last: 'One', total: 100,
+        series: [{ step: '2019-20', value: 50, team: 'cleveland-cavaliers' },
+                 { step: '2020-21', value: 100, team: 'miami-heat' }],
+      }),
+      entity({ id: 'p2', name: 'Beta Two', first: 'Beta', last: 'Two', total: 50 }),
+    ],
+  },
+} as unknown as WriterBrief;
+
+/** One beat, one accent — every case below differs only in what the sentence
+ *  says and which season it anchors. Violations are filtered to `team-era`
+ *  because a single beat also trips `beat-count` against miniBrief's [2,2]. */
+const eraViolations = (text: string, step: string | undefined, brief = eraBrief) =>
+  verifyDraft({
+    title: 't',
+    beats: [{
+      text, entityId: 'p1', ending: 'thesis' as const,
+      accents: [{ t: 0.5, kind: 'spotlight' as const, at: { entityId: 'p1', ...(step ? { step } : {}) } }],
+    }],
+  }, brief).filter((v) => v.rule === 'team-era');
+
+t('teamsNamedIn resolves a city, a nickname and a short form to the same slug', () => {
+  assert.deepEqual(teamsNamedIn('Alpha One arrives in Cleveland'), ['cleveland-cavaliers']);
+  assert.deepEqual(teamsNamedIn('Alpha One arrives with the Cavaliers'), ['cleveland-cavaliers']);
+  assert.deepEqual(teamsNamedIn('Alpha One arrives with the Cavs'), ['cleveland-cavaliers']);
+  assert.deepEqual(teamsNamedIn('nothing in this sentence names a franchise'), []);
+  // ESPN spells one LA team "LA Clippers" and the other "Los Angeles Lakers",
+  // so both spellings name both teams — safe, because the rule passes on ANY
+  // match and a Lakers beat must not be convicted of naming the Clippers.
+  assert.ok(teamsNamedIn('Alpha One moves to LA').includes('los-angeles-lakers'));
+});
+
+t('team-era catches a beat that names one team while anchoring another team\'s season', () => {
+  const v = eraViolations('Alpha One thrives in Cleveland, and the total keeps climbing.', '2020-21');
+  assert.equal(v.length, 1, `expected one team-era violation, got ${JSON.stringify(v)}`);
+  assert.ok(v[0].detail.includes('Cleveland Cavaliers'), `must name the team said: ${v[0].detail}`);
+  assert.ok(v[0].detail.includes('2020-21'), `must name the anchored season: ${v[0].detail}`);
+  assert.ok(v[0].detail.includes('Miami Heat'), `must name the team that season was: ${v[0].detail}`);
+  // The nickname and the short form are the same claim as the city.
+  assert.equal(eraViolations('Alpha One thrives with the Cavaliers, and the total climbs.', '2020-21').length, 1);
+  assert.equal(eraViolations('Alpha One thrives with the Cavs, and the total climbs.', '2020-21').length, 1);
+});
+
+t('team-era passes a transition sentence naming both teams, and any correct naming', () => {
+  assert.deepEqual(eraViolations('Alpha One leaves Cleveland for Miami, and the line keeps climbing.', '2020-21'), []);
+  assert.deepEqual(eraViolations('Alpha One leaves Cleveland for Miami, and the line keeps climbing.', '2019-20'), []);
+  assert.deepEqual(eraViolations('Alpha One starts in Cleveland, and the line begins to climb.', '2019-20'), []);
+  assert.deepEqual(eraViolations('Alpha One starts with the Cavs, and the line begins to climb.', '2019-20'), []);
+});
+
+t('team-era skips a beat with no anchored step, and a beat naming no team', () => {
+  assert.deepEqual(eraViolations('Alpha One thrives in Cleveland, and the total keeps climbing.', undefined), []);
+  assert.deepEqual(eraViolations('Alpha One thrives everywhere, and the total keeps climbing.', '2020-21'), []);
+});
+
+t('team-era is skipped entirely for a brief that carries no per-season team', () => {
+  // miniBrief's entities have empty series: an older brief, or a source (C01)
+  // that never carried a team, must not start failing.
+  assert.deepEqual(eraViolations('Alpha One thrives in Cleveland, and the total keeps climbing.', '2020-21', miniBrief), []);
+});
+
 /* --------------------------------------------------------------- briefMd.ts */
 
 const mdBrief = {
@@ -784,6 +856,48 @@ t('renderBriefMd states the word target and the accent budget as numbers, not ra
   assert.ok(md.includes('173–233 words'), 'expected the accepted word window, derived from the tolerance');
   assert.ok(md.includes('**Accent budget:** 15–30 accents total'), 'expected the total to appear as a concrete number');
   assert.ok(!md.includes('**Duration:** 40–95s'), 'the outer legal range must not be offered as the thing to aim at');
+});
+
+/* The eras. A writer handed 23 rows of `teamSlug` cannot use them; handed the
+ * contiguous runs it can write "he left Cleveland for Miami". The runs come
+ * from the same `teamChanges` the chart places its logos with, so the
+ * Markdown and the picture cannot disagree about where an era ends. */
+const eraMdBrief = {
+  ...mdBrief,
+  visual: { ...mdBrief.visual, anchor_steps: ['2019-20', '2020-21', '2021-22', '2022-23'] },
+  facts: {
+    ...mdBrief.facts,
+    entities: [
+      entity({
+        id: 'p1', name: 'Alpha One', first: 'Alpha', last: 'One', pick: 3, total: 500, rank: 1, seasons_played: 4,
+        series: [
+          { step: '2019-20', value: 100, team: 'cleveland-cavaliers' },
+          { step: '2020-21', value: 200, team: 'cleveland-cavaliers' },
+          { step: '2021-22', value: 400, team: 'miami-heat' },
+          { step: '2022-23', value: 500, team: 'cleveland-cavaliers' },
+        ],
+      }),
+    ],
+  },
+} as unknown as WriterBrief;
+
+t('renderBriefMd prints the team ERAS as contiguous runs under their human names', () => {
+  const eraMd = renderBriefMd(eraMdBrief);
+  assert.ok(eraMd.includes('## Which team, which seasons'), 'the eras section is missing');
+  assert.ok(eraMd.includes('| Cleveland Cavaliers | 2019-20 .. 2020-21 |'), eraMd);
+  assert.ok(eraMd.includes('| Miami Heat | 2021-22 .. 2021-22 |'), eraMd);
+  // A return to a team already left is its OWN era, not a merge with the first.
+  assert.ok(eraMd.includes('| Cleveland Cavaliers | 2022-23 .. 2022-23 |'), eraMd);
+  // Human names, never the ESPN slug the JSON carries.
+  assert.ok(!eraMd.includes('cleveland-cavaliers'), 'the slug leaked into the Markdown');
+  const section = eraMd.slice(eraMd.indexOf('## Which team'), eraMd.indexOf('## What you may point at'));
+  assert.equal(section.split('\n').filter((l) => l.startsWith('| Alpha One |')).length, 3,
+    'three runs across four seasons, not four rows');
+});
+
+t('renderBriefMd omits the eras section entirely when no entity carries a team', () => {
+  assert.ok(!md.includes('Which team, which seasons'),
+    'a brief with no per-season team must not grow an empty eras heading');
 });
 
 /* --------------------------------------------------------- verify.ts: parseDraftText */

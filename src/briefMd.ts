@@ -11,7 +11,33 @@
  */
 import type { WriterBrief, BriefEntity } from './brief';
 import { fmt } from './scale';
+import { teamBySlug, teamChanges } from './teams';
 import { LENGTH_TOLERANCE } from './verify';
+
+/**
+ * The contiguous runs of one team in a series — the ERAS, not 23 rows of slug.
+ *
+ * A writer cannot use "2013-14: miami-heat" twenty-three times; it can use
+ * "Miami 2010-11 .. 2013-14". The boundaries come from `teamChanges`, the same
+ * function the chart uses to place its logos, so the Markdown and the picture
+ * can never disagree about where an era ends.
+ *
+ * A run whose first season carries no team (or a slug no longer in
+ * data/teams.json — a relocated franchise) is dropped rather than guessed:
+ * the section is an aid, and a wrong era is worse than a missing one.
+ */
+function teamEras(e: BriefEntity): { team: string; from: string; to: string }[] {
+  const cuts = [0, ...teamChanges(e.series), e.series.length];
+  const out: { team: string; from: string; to: string }[] = [];
+  for (let k = 0; k + 1 < cuts.length; k++) {
+    const first = e.series[cuts[k]];
+    const last = e.series[cuts[k + 1] - 1];
+    const mark = teamBySlug(first?.team);
+    if (!mark || !first || !last) continue;
+    out.push({ team: mark.name, from: first.step, to: last.step });
+  }
+  return out;
+}
 
 /** Markdown table cells break on a bare `|` in the data (never happens for a
  *  player name today, but a name is still untrusted external text). */
@@ -173,6 +199,28 @@ export function renderBriefMd(b: WriterBrief): string {
     L.push(`| ${esc(e.name)} | ${cells.join(' | ')} |`);
   }
   L.push('');
+
+  /* 5b. which team, which seasons -------------------------------------------
+   * The eras, immediately under the season table they index, because a beat
+   * that anchors a step is choosing an era whether or not it knows it. The
+   * whole section is skipped when no entity carries a team — a source that
+   * has none (C01) should not grow an empty heading. */
+  const eras = byRank.map((e) => ({ e, runs: teamEras(e) })).filter((x) => x.runs.length > 0);
+  if (eras.length) {
+    L.push('## Which team, which seasons', '');
+    L.push(
+      'The chart draws that team\'s logo at every change, so the picture states the era whether or not ' +
+      'the voice does. A beat that names a team its anchored `at.step` contradicts is rejected with `team-era`.',
+      ''
+    );
+    L.push('| Player | Team | Seasons |', '| --- | --- | ---: |');
+    for (const { e, runs } of eras) {
+      for (const r of runs) {
+        L.push(`| ${esc(e.name)} | ${esc(r.team)} | ${r.from} .. ${r.to} |`);
+      }
+    }
+    L.push('');
+  }
 
   /* 6. what you may point at ------------------------------------------------*/
   L.push('## What you may point at', '');
